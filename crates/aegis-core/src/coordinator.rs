@@ -48,7 +48,13 @@ impl Coordinator {
                     .as_array()
                     .map(|a| {
                         a.iter()
-                            .filter_map(|p| p.as_str().map(String::from))
+                            // Models write params as strings or as
+                            // {name,in,confirmed} objects — take either.
+                            .filter_map(|p| {
+                                p.as_str()
+                                    .or_else(|| p["name"].as_str())
+                                    .map(String::from)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();

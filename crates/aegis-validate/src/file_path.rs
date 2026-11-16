@@ -21,6 +21,7 @@ impl Validator for FilePathValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
+        let hdrs = crate::validator::evidence_headers(f);
         let (Some(url), Some(param)) = (
             f.evidence["url"].as_str().map(|s| s.to_string()),
             f.evidence["param"].as_str().map(|s| s.to_string()),
@@ -32,7 +33,7 @@ impl Validator for FilePathValidator {
             p.insert(param.clone(), val);
             let (u, pp) = (url.clone(), p);
             let probe = self.probe.clone();
-            async move { probe.get(&u, &pp).await }
+            let h2 = hdrs.clone(); async move { probe.get2(&u, &pp, &h2).await }
         };
 
         let Ok(base) = send("nonexistent_aegis".into()).await else {

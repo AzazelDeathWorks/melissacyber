@@ -23,6 +23,7 @@ impl Validator for SsrfValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
+        let hdrs = crate::validator::evidence_headers(f);
         let (Some(url), Some(param)) = (
             f.evidence["url"].as_str().map(|s| s.to_string()),
             f.evidence["param"].as_str().map(|s| s.to_string()),
@@ -34,7 +35,7 @@ impl Validator for SsrfValidator {
         let cb = format!("{}/{}/cb", self.oob_base, token);
         let mut p = HashMap::new();
         p.insert(param.clone(), cb.clone());
-        if let Err(e) = self.probe.get(&url, &p).await {
+        if let Err(e) = self.probe.get2(&url, &p, &hdrs).await {
             return Verdict::Rejected { reason: format!("trigger failed: {e}") };
         }
 

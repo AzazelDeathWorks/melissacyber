@@ -48,8 +48,28 @@ impl ProbeClient {
         if !self.allow.allows(&host) {
             anyhow::bail!("validator refused out-of-scope host {host}");
         }
+        self.get2(url, params, &[]).await
+    }
+
+    /// Same as `get`, but attaches evidence-supplied headers (e.g. an
+    /// auth token the solver had to forge to reach the sink).
+    pub async fn get2(
+        &self,
+        url: &str,
+        params: &HashMap<String, String>,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<ProbeResponse> {
+        let u = reqwest::Url::parse(url)?;
+        let host = u.host_str().unwrap_or("").to_string();
+        if !self.allow.allows(&host) {
+            anyhow::bail!("validator refused out-of-scope host {host}");
+        }
         let start = Instant::now();
-        let resp = self.client.get(u).query(params).send().await?;
+        let mut req = self.client.get(u).query(params);
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req.send().await?;
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
         Ok(ProbeResponse {

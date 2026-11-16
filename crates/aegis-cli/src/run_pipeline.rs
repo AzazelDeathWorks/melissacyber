@@ -9,7 +9,8 @@ use aegis_sandbox::{Allowlist, BackendKind, DockerBackend, HostBackend, OobStore
 use aegis_scope::{Scope, TargetKind};
 use aegis_tools::*;
 use aegis_knowledge::PatternLibrary;
-use aegis_validate::{CmdInjectionValidator, FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator, ValidatorRegistry, XssValidator};
+use aegis_validate::{
+    ReplayValidator, CmdInjectionValidator, FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator, ValidatorRegistry, XssValidator};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -262,7 +263,8 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     }));
     validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
     validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
-    validators.register(Arc::new(FilePathValidator { probe }));
+    validators.register(Arc::new(FilePathValidator { probe: probe.clone() }));
+    validators.register(Arc::new(ReplayValidator { probe }));
 
     // --- providers ---
     let target_url = scope
@@ -404,7 +406,8 @@ pub async fn serve(port: u16, _mcp: bool) -> anyhow::Result<()> {
     }));
     validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
     validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
-    validators.register(Arc::new(FilePathValidator { probe }));
+    validators.register(Arc::new(FilePathValidator { probe: probe.clone() }));
+    validators.register(Arc::new(ReplayValidator { probe }));
     let state = Arc::new(aegis_mcp::McpState {
         allow,
         validators: Arc::new(validators),

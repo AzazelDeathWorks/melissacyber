@@ -25,3 +25,16 @@ impl ValidatorRegistry {
         self.validators.get(&format!("{class:?}")).cloned()
     }
 }
+
+/// Pull headers the solver used in its exploit (e.g. forged auth) out of
+/// `evidence["headers"]` so validators replay with the same context.
+pub fn evidence_headers(f: &crate::finding::Finding) -> Vec<(String, String)> {
+    f.evidence["headers"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}

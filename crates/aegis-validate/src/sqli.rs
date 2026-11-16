@@ -43,6 +43,7 @@ impl Validator for SqliValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
+        let hdrs = crate::validator::evidence_headers(f);
         let Some((url, param)) = Self::evidence_url(f) else {
             return Verdict::Rejected { reason: "evidence missing url/param".into() };
         };
@@ -51,7 +52,7 @@ impl Validator for SqliValidator {
             p.insert(param.clone(), val);
             let (u, pp) = (url.clone(), p);
             let probe = self.probe.clone();
-            async move { probe.get(&u, &pp).await }
+            let h2 = hdrs.clone(); async move { probe.get2(&u, &pp, &h2).await }
         };
 
         let baseline = match send("1".into()).await {
@@ -109,8 +110,31 @@ impl Validator for SqliValidator {
             }
         }
 
+        // 4. Auth-bypass tautology: classic login bypass — an invalid
+        //    credential MUST fail while the tautology MUST flip to
+        //    authenticated output (status or success markers).
+        let neg = send(format!("aegis_invalid_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])).await;
+        let inj = send("' OR '1'='1'-- ".into()).await;
+        if let (Ok(neg), Ok(inj)) = (neg, inj) {
+            const SUCCESS: [&str; 6] = ["welcome", "flag{", "dashboard", "logout", "admin", "token"];
+            let neg_low = neg.body.to_lowercase();
+            let inj_low = inj.body.to_lowercase();
+            let status_flip = neg.status >= 400 && (200..300).contains(&inj.status);
+            let marker_hit = SUCCESS
+                .iter()
+                .any(|s| inj_low.contains(s) && !neg_low.contains(s));
+            if (status_flip || marker_hit) && jaccard(&neg.body, &inj.body) < 0.9 {
+                return Verdict::Verified {
+                    reproduction: format!(
+                        "GET {url}?{param}: invalid creds -> {}, ' OR '1'='1'-- -> {} (auth bypass, body diverges sim {:.2})",
+                        neg.status, inj.status, jaccard(&neg.body, &inj.body)
+                    ),
+                };
+            }
+        }
+
         Verdict::Rejected {
-            reason: "no error signature, boolean differential, or time delay reproduced".into(),
+            reason: "no error signature, boolean differential, time delay, or auth-bypass reproduced".into(),
         }
     }
 }

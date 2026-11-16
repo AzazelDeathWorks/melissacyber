@@ -18,6 +18,7 @@ impl Validator for XssValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
+        let hdrs = crate::validator::evidence_headers(f);
         let (Some(url), Some(param)) = (
             f.evidence["url"].as_str().map(|s| s.to_string()),
             f.evidence["param"].as_str().map(|s| s.to_string()),
@@ -29,7 +30,7 @@ impl Validator for XssValidator {
         let payload = format!("\"><svg/onload={}>", marker);
         let mut p = HashMap::new();
         p.insert(param.clone(), payload.clone());
-        let resp = match self.probe.get(&url, &p).await {
+        let resp = match self.probe.get2(&url, &p, &hdrs).await {
             Ok(r) => r,
             Err(e) => return Verdict::Rejected { reason: format!("probe failed: {e}") },
         };

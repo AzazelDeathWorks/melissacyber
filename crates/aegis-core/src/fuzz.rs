@@ -76,7 +76,9 @@ pub async fn fuzz_run(
 ) -> Vec<Crash> {
     let mut crashes = vec![];
     for input in inputs {
-        let cmd = cmd_template.replacen("@@", input, 1);
+        // Shell-escape single quotes so inputs stay inside their arg.
+        let esc = input.replace('\'', "'\\''");
+        let cmd = cmd_template.replacen("@@", &esc, 1);
         let out = match backend.exec(handle, &[&cmd]).await {
             Ok(o) => o,
             Err(e) => format!("exec error: {e}"),
