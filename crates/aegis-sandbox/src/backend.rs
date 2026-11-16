@@ -17,6 +17,9 @@ pub struct SandboxSpec {
     pub mem_mb: u32,
     /// Mount allowlist — system dirs and credential dirs are refused.
     pub mounts: Vec<String>,
+    /// Hosts the egress proxy may reach (scope allowlist). Empty = deny all.
+    #[serde(default)]
+    pub egress_allow: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

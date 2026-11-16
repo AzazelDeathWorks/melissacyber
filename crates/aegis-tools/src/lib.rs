@@ -4,8 +4,11 @@
 //! quality beats tool count (Project Naptime principle #3). Every tool
 //! speaks structured I/O and is sandbox-scoped.
 
+pub mod impls;
 pub mod registry;
 pub mod spec;
 
+pub use impls::*;
+pub use aegis_sandbox::oob::{run_oob_server, OobHit, OobStore};
 pub use registry::ToolRegistry;
 pub use spec::{Tool, ToolError, ToolOutput, ToolSpec};

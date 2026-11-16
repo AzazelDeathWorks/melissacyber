@@ -15,7 +15,23 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    /// Set on tool-result messages (provider wire id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl Message {
+    pub fn system(s: impl Into<String>) -> Self {
+        Self { role: Role::System, content: s.into(), tool_calls: vec![], tool_call_id: None }
+    }
+    pub fn user(s: impl Into<String>) -> Self {
+        Self { role: Role::User, content: s.into(), tool_calls: vec![], tool_call_id: None }
+    }
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { role: Role::Tool, content: content.into(), tool_calls: vec![], tool_call_id: Some(call_id.into()) }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

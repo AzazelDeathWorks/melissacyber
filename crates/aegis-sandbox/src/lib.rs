@@ -7,7 +7,15 @@
 //! engagements isolated from each other.
 
 pub mod backend;
+pub mod docker;
+pub mod egress;
+pub mod oob;
+pub mod host;
 pub mod network;
 
 pub use backend::{BackendKind, SandboxBackend, SandboxHandle, SandboxSpec};
+pub use docker::DockerBackend;
+pub use host::HostBackend;
+pub use egress::{Allowlist, EgressProxy};
+pub use oob::{run_oob_server, OobHit, OobStore};
 pub use network::EgressPolicy;

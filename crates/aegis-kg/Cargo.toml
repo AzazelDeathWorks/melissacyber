@@ -16,3 +16,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }

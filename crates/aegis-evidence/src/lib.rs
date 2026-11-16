@@ -6,5 +6,5 @@
 pub mod report;
 pub mod store;
 
-pub use report::{FindingReport, ReportFormat};
+pub use report::{render_markdown, FindingReport, ReportFormat};
 pub use store::{Artifact, ArtifactStore};

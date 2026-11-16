@@ -1,17 +1,19 @@
-//! melissacyber — CLI entry point.
+//! melissacyber — open-source AI security harness.
+//! Built by the hydralabs deathworks ekibi.
 //!
-//! CLI-first: `aegis init` -> scope.yaml, `aegis run --mode red|blue|purple`,
-//! `aegis serve --mcp`, `aegis worker`, `aegis bench`, `aegis copilot`…
+//! See `docs/design.md` for the architecture.
+
+mod init_wizard;
+mod run_pipeline;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "aegis",
-    version,
-    about = "melissacyber — open-source autonomous cyber harness (red + blue), by hydralabs deathworks",
-    long_about = "Autonomous security testing for systems you own or are authorized to test. \
-                  Deterministic validation, network-level scope enforcement, BYOK models."
+    about = "melissacyber — AI security harness by hydralabs deathworks ekibi",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -20,66 +22,102 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Interactive wizard: writes scope.yaml (targets, RoE, budget, authorization).
-    Init,
-    /// Run an engagement.
-    Run {
-        /// Target or workspace path (overrides scope.yaml when given).
+    /// Interactive setup: scope, ROE, budget, backend -> scope.yaml
+    Init {
         #[arg(long)]
         target: Option<String>,
-        #[arg(long, value_enum, default_value = "red")]
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Run an engagement end to end.
+    Run {
+        #[arg(long)]
+        scope: PathBuf,
+        #[arg(long, value_enum, default_value_t = ModeArg::Red)]
         mode: ModeArg,
-        /// Deep source-code mode: LLM-guided fuzz harness generation.
+        /// Aegis deep mode: LLM-guided fuzzing + code audit.
         #[arg(long)]
         deep: bool,
-        /// Human-in-the-loop approval gate for dangerous actions.
-        #[arg(long)]
-        hitl: Option<bool>,
-        /// Hard spend cap in USD.
-        #[arg(long)]
-        budget: Option<f64>,
-        /// Isolation backend for the attack box.
-        #[arg(long, value_enum, default_value = "docker")]
+        /// USD spend cap.
+        #[arg(long, default_value_t = 20.0)]
+        budget: f64,
+        /// Agent count cap.
+        #[arg(long, default_value_t = 128)]
+        max_agents: usize,
+        /// Max parallel agents.
+        #[arg(long, default_value_t = 8)]
+        max_parallel: usize,
+        /// Sandbox backend.
+        #[arg(long, value_enum, default_value_t = BackendArg::Docker)]
         backend: BackendArg,
+        /// Human-in-the-loop gates for dangerous actions.
+        #[arg(long)]
+        hitl: bool,
+        /// Use the scripted mock provider (tests / demos, no API key).
+        #[arg(long)]
+        mock: bool,
+        /// Engagement output dir.
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
     },
-    /// Interactive co-drive: you and the coordinator plan together.
-    Copilot,
-    /// Expose the harness as an API/MCP server for IDEs and other agents.
+    /// Interactive copilot mode: you drive, the harness executes + validates.
+    Copilot {
+        #[arg(long)]
+        scope: PathBuf,
+    },
+    /// Serve melissacyber as an MCP server for other agents.
     Serve {
         #[arg(long)]
         mcp: bool,
-        #[arg(long, default_value = "127.0.0.1:7357")]
-        bind: String,
+        #[arg(long, default_value_t = 7420)]
+        port: u16,
     },
-    /// Join a distributed engagement as a solver worker.
+    /// Run as a distributed worker (Faz 3).
     Worker {
         #[arg(long)]
-        join: String,
+        controller: Option<String>,
     },
-    /// Run benchmark suites (Cybench, AutoPenBench, NYU CTF, CyberGym…).
+    /// Run a benchmark suite (AutoPenBench / CVE-Bench / Cybench adapters).
     Bench {
         #[arg(long)]
         suite: String,
+        #[arg(long)]
+        limit: Option<usize>,
     },
-    /// Re-run a finding's PoC.
+    /// Replay a recorded engagement trace for purple/blue validation.
     Replay {
-        finding: String,
+        #[arg(long)]
+        engagement: String,
     },
-    /// Render engagement report (md/pdf/sarif/html).
+    /// Render a report from an engagement's artifacts.
     Report {
+        #[arg(long)]
+        engagement: String,
         #[arg(long, default_value = "markdown")]
         format: String,
     },
-    /// Manage domain packs and plugins.
+    /// Manage domain packs and validator kits.
     Pack {
-        #[arg(value_parser = ["list", "install", "build"])]
-        action: String,
-        name: Option<String>,
+        #[command(subcommand)]
+        sub: PackCmd,
     },
-    /// Self-play training arena (attacker vs defender agents).
-    Arena,
-    /// Watch a target and run delta-pentests on change.
-    Watch,
+    /// Attacker-vs-defender self-play (Faz 4).
+    Arena {
+        #[arg(long)]
+        rounds: usize,
+    },
+    /// Delta retest on change (CI).
+    Watch {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackCmd {
+    List,
+    Install { name: String },
+    New { name: String },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -94,27 +132,81 @@ enum BackendArg {
     Docker,
     Gvisor,
     Firecracker,
+    Host,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Init => println!("aegis init: scope/RoE wizard — Faz 1"),
-        Cmd::Run { mode, .. } => println!("aegis run --mode {:?}: engagement loop — Faz 1", mode),
-        Cmd::Copilot => println!("aegis copilot: human + coordinator co-drive — Faz 2"),
-        Cmd::Serve { mcp, bind } => println!("aegis serve (mcp={mcp}) on {bind} — Faz 3"),
-        Cmd::Worker { join } => println!("aegis worker --join {join} — Faz 3"),
-        Cmd::Bench { suite } => println!("aegis bench --suite {suite} — Faz 1 runner skeleton"),
-        Cmd::Replay { finding } => println!("aegis replay {finding} — Faz 2"),
-        Cmd::Report { format } => println!("aegis report --format {format} — Faz 1"),
-        Cmd::Pack { action, name } => println!("aegis pack {action} {:?} — Faz 3", name),
-        Cmd::Arena => println!("aegis arena: self-play training ground — Faz 4"),
-        Cmd::Watch => println!("aegis watch: continuous delta-pentest — Faz 3"),
+        Cmd::Init { target, out } => init_wizard::run(target, out).await?,
+        Cmd::Run {
+            scope,
+            mode,
+            deep,
+            budget,
+            max_agents,
+            max_parallel,
+            backend,
+            hitl,
+            mock,
+            artifacts_dir,
+        } => {
+            run_pipeline::run(run_pipeline::RunArgs {
+                scope,
+                mode,
+                deep,
+                budget,
+                max_agents,
+                max_parallel,
+                backend,
+                hitl,
+                mock,
+                artifacts_dir,
+            })
+            .await?
+        }
+        Cmd::Copilot { scope } => {
+            println!("copilot mode — interactive shell over {}", scope.display());
+            println!("(Faz 2 deliverable; run `aegis run` for the autonomous path)");
+        }
+        Cmd::Serve { mcp, port } => {
+            if mcp {
+                println!("MCP server on :{port} — exposing pentest/validate tools (Faz 3)");
+            }
+        }
+        Cmd::Worker { controller } => {
+            println!("worker mode -> controller {controller:?} (Faz 3)");
+        }
+        Cmd::Bench { suite, limit } => {
+            println!("bench {suite} limit={limit:?} — adapters land with Faz 1 tests");
+        }
+        Cmd::Replay { engagement } => {
+            println!("replay engagement {engagement} (Faz 2)");
+        }
+        Cmd::Report { engagement, format } => {
+            println!("report {engagement} -> {format}");
+        }
+        Cmd::Pack { sub } => match sub {
+            PackCmd::List => {
+                println!("domain packs (Faz 1): web\nroadmap: api network-ad cloud binary mobile smart-contract llm-target supply-chain saas-config iot");
+            }
+            PackCmd::Install { name } => println!("install pack {name}"),
+            PackCmd::New { name } => println!("scaffold pack {name}"),
+        },
+        Cmd::Arena { rounds } => {
+            println!("self-play arena, {rounds} rounds (Faz 4 — needs deterministic judge + GPU budget)");
+        }
+        Cmd::Watch { repo } => {
+            println!("watch {repo:?} — delta retest on change (Faz 3)");
+        }
     }
     Ok(())
 }

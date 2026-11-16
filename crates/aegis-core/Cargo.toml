@@ -15,3 +15,19 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
+tokio = { workspace = true }
+serde_yaml = { workspace = true }
+aegis-gateway = { path = "../aegis-gateway" }
+aegis-tools = { path = "../aegis-tools" }
+aegis-validate = { path = "../aegis-validate" }
+aegis-kg = { path = "../aegis-kg" }
+aegis-sandbox = { path = "../aegis-sandbox" }
+aegis-scope = { path = "../aegis-scope" }
+aegis-evidence = { path = "../aegis-evidence" }
+aegis-knowledge = { path = "../aegis-knowledge" }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+aegis-evidence = { path = "../aegis-evidence" }
+aegis-scope = { path = "../aegis-scope" }

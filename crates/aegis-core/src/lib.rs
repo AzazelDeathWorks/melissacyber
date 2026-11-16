@@ -10,9 +10,13 @@ pub mod budget;
 pub mod coordinator;
 pub mod engagement;
 pub mod pag;
+pub mod prompts;
+pub mod runner;
+pub mod spec_loader;
 
 pub use agent::{Agent, AgentId, AgentKind, AgentSpec, AgentState};
 pub use budget::Budget;
-pub use coordinator::Coordinator;
-pub use engagement::{Engagement, EngagementId, Mode};
+pub use coordinator::{Coordinator, EndpointTask};
+pub use engagement::{run_engagement, Engagement, EngagementCtx, EngagementId, EngagementResult, Mode, ProviderFor};
 pub use pag::{AttackGraph, AttackStep, EdgeKind};
+pub use runner::{run_agent, AgentOutcome};
