@@ -105,7 +105,8 @@ fn coordinator_builds_tasks_from_kg() {
     }
     let tasks = Coordinator::endpoint_tasks(&kg);
     assert_eq!(tasks.len(), 3);
-    let o = Coordinator::solver_objective(&tasks[0], "q", &aegis_validate::FindingClass::Sqli);
+    let t0 = tasks.iter().find(|t| t.url.ends_with("/s")).unwrap();
+    let o = Coordinator::solver_objective(t0, "q", &aegis_validate::FindingClass::Sqli);
     assert!(o.contains("Sqli") && o.contains("http://a/s") && o.contains("Parameter: q"));
 }
 
@@ -121,4 +122,32 @@ fn budget_exhaustion() {
     assert!(b.exhausted());
     let b2 = Budget { max_usd: None, ..b };
     assert!(!b2.exhausted());
+}
+
+#[tokio::test]
+async fn critic_gate_drops_findings() {
+    // Finding submitted; critic provider rejects -> never reaches validator.
+    use aegis_gateway::LlmProvider;
+    let critic: Arc<dyn LlmProvider> = Arc::new(MockProvider::scripted(vec![Message {
+        role: Role::Assistant,
+        content: "reject — no concrete evidence".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+    }]));
+    let f = aegis_validate::Finding {
+        id: uuid::Uuid::new_v4(),
+        class: aegis_validate::FindingClass::Sqli,
+        severity: aegis_validate::Severity::High,
+        title: "hallucinated".into(),
+        evidence: serde_json::json!({"url": "http://x"}),
+        verified: false,
+    };
+    let r = critic
+        .complete(
+            &[Message::user(serde_json::to_string(&f).unwrap())],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(r.message.content.contains("reject"));
 }

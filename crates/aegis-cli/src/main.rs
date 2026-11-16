@@ -59,6 +59,9 @@ enum Cmd {
         /// Engagement output dir.
         #[arg(long)]
         artifacts_dir: Option<PathBuf>,
+        /// Sampling: solver variants per objective (sampling-and-verify).
+        #[arg(long, default_value_t = 1)]
+        samples: usize,
     },
     /// Interactive copilot mode: you drive, the harness executes + validates.
     Copilot {
@@ -158,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
             hitl,
             mock,
             artifacts_dir,
+            samples,
         } => {
             run_pipeline::run(run_pipeline::RunArgs {
                 scope,
@@ -170,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
                 hitl,
                 mock,
                 artifacts_dir,
+                samples,
             })
             .await?
         }

@@ -11,7 +11,7 @@ use aegis_kg::KnowledgeGraph;
 use aegis_sandbox::{Allowlist, HostBackend, OobStore, run_oob_server, SandboxBackend, SandboxSpec, BackendKind};
 use aegis_scope::{Roe, Scope, Target, TargetKind};
 use aegis_tools::*;
-use aegis_validate::{ProbeClient, SqliValidator, SsrfValidator, ValidatorRegistry, Verdict, XssValidator};
+use aegis_validate::{CmdInjectionValidator, FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator, ValidatorRegistry, Verdict, XssValidator};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -90,6 +90,33 @@ async fn vulnerable_target() -> SocketAddr {
                         let q = params.get("q").cloned().unwrap_or_default();
                         ("200 OK", format!("<html><body>search: {q}</body></html>"))
                     }
+                    "/exec" => {
+                        let c = params.get("c").cloned().unwrap_or_default();
+                        if c.contains("sleep 3") {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            ("200 OK", "done".into())
+                        } else if let Some(i) = c.find("echo ") {
+                            ("200 OK", format!("out: {}", &c[i + 5..]))
+                        } else {
+                            ("200 OK", "ok".into())
+                        }
+                    }
+                    "/tpl" => {
+                        let n = params.get("name").cloned().unwrap_or_default();
+                        if n.contains("{{") && n.contains('*') && n.contains("}}") {
+                            ("200 OK", "result: 475906".into())
+                        } else {
+                            ("200 OK", format!("hello {n}"))
+                        }
+                    }
+                    "/read" => {
+                        let f = params.get("f").cloned().unwrap_or_default();
+                        if f.contains("etc/passwd") {
+                            ("200 OK", "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon".into())
+                        } else {
+                            ("404 Not Found", "not found".into())
+                        }
+                    }
                     "/fetch" => {
                         if let Some(u) = params.get("url") {
                             let u = u.clone();
@@ -136,6 +163,24 @@ fn script_discovery(url: String) -> Vec<Message> {
                     arguments: json!({"kind":"endpoint","label":format!("{url}/fetch"),
                         "data":{"url":format!("{url}/fetch"),"params":["url"]}}),
                 },
+                ToolCall {
+                    id: "d4".into(),
+                    name: "kg_write".into(),
+                    arguments: json!({"kind":"endpoint","label":format!("{url}/exec"),
+                        "data":{"url":format!("{url}/exec"),"params":["c"]}}),
+                },
+                ToolCall {
+                    id: "d5".into(),
+                    name: "kg_write".into(),
+                    arguments: json!({"kind":"endpoint","label":format!("{url}/tpl"),
+                        "data":{"url":format!("{url}/tpl"),"params":["name"]}}),
+                },
+                ToolCall {
+                    id: "d6".into(),
+                    name: "kg_write".into(),
+                    arguments: json!({"kind":"endpoint","label":format!("{url}/read"),
+                        "data":{"url":format!("{url}/read"),"params":["f"]}}),
+                },
             ],
             tool_call_id: None,
         },
@@ -151,7 +196,7 @@ fn solver_decide(messages: &[Message]) -> Message {
         .find(|m| m.role == Role::User)
         .map(|m| m.content.clone())
         .unwrap_or_default();
-    let class = ["Sqli", "Xss", "Ssrf"]
+    let class = ["Sqli", "Xss", "Ssrf", "CmdInjection", "Ssti", "FilePath"]
         .iter()
         .find(|c| objective.contains(**c))
         .copied()
@@ -183,6 +228,17 @@ fn solver_decide(messages: &[Message]) -> Message {
             tool_call_id: None,
         };
     }
+    let class_str = match class {
+        "CmdInjection" => "cmd",
+        "FilePath" => "file_path",
+        other => match other {
+            "Sqli" => "sqli",
+            "Xss" => "xss",
+            "Ssrf" => "ssrf",
+            "Ssti" => "ssti",
+            _ => "other",
+        },
+    };
     Message {
         role: Role::Assistant,
         content: format!("testing {class}"),
@@ -190,7 +246,7 @@ fn solver_decide(messages: &[Message]) -> Message {
             id: "s1".into(),
             name: "validator_submit".into(),
             arguments: json!({
-                "class": class.to_lowercase(),
+                "class": class_str,
                 "severity": "high",
                 "title": format!("{class} in param {param} at {url}"),
                 "evidence": {"url": url, "param": param, "payload": "test"},
@@ -250,10 +306,13 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
     validators.register(Arc::new(SqliValidator { probe: probe.clone() }));
     validators.register(Arc::new(XssValidator { probe: probe.clone() }));
     validators.register(Arc::new(SsrfValidator {
-        probe,
+        probe: probe.clone(),
         oob: oob_store,
         oob_base,
     }));
+    validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
+    validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
+    validators.register(Arc::new(FilePathValidator { probe }));
 
     let disc_url = target_url.clone();
     let provider_for: ProviderFor = Arc::new(move |role: &str| match role {
@@ -295,6 +354,8 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
         solver_turns: 6,
         discovery_turns: 6,
         artifacts_dir: std::env::temp_dir().join("aegis-e2e"),
+        samples: 1,
+        patterns: Arc::new(Mutex::new(aegis_knowledge::PatternLibrary::default())),
     };
 
     let result = run_engagement(&mut ctx, provider_for).await.unwrap();
@@ -311,8 +372,8 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
             match v { Verdict::Verified{reproduction} => format!("VERIFIED {reproduction}"),
                 Verdict::Rejected{reason} => format!("REJ {reason}"), _ => "preview".into() });
     }
-    assert_eq!(result.endpoints, 3, "discovery should write 3 endpoints");
-    assert_eq!(result.solver_runs, 9, "3 endpoints x 1 param x 3 classes");
+    assert_eq!(result.endpoints, 6, "discovery should write 6 endpoints");
+    assert_eq!(result.solver_runs, 36, "6 endpoints x 1 param x 6 classes");
     assert!(
         verified_classes.contains(&aegis_validate::FindingClass::Sqli),
         "sqli must be verified: {result:?}"
@@ -324,6 +385,18 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
     assert!(
         verified_classes.contains(&aegis_validate::FindingClass::Ssrf),
         "ssrf must be verified via OOB"
+    );
+    assert!(
+        verified_classes.contains(&aegis_validate::FindingClass::CmdInjection),
+        "cmd injection must be verified via canary echo"
+    );
+    assert!(
+        verified_classes.contains(&aegis_validate::FindingClass::Ssti),
+        "ssti must be verified via arithmetic evaluation"
+    );
+    assert!(
+        verified_classes.contains(&aegis_validate::FindingClass::FilePath),
+        "path traversal must be verified via file signature"
     );
 }
 

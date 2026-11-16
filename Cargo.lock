@@ -6,8 +6,10 @@ version = 4
 name = "aegis-blue"
 version = "0.1.0"
 dependencies = [
+ "aegis-validate",
  "anyhow",
  "async-trait",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",

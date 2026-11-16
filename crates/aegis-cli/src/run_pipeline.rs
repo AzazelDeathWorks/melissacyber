@@ -8,7 +8,8 @@ use aegis_kg::KnowledgeGraph;
 use aegis_sandbox::{Allowlist, BackendKind, DockerBackend, HostBackend, OobStore, SandboxBackend, SandboxSpec};
 use aegis_scope::{Scope, TargetKind};
 use aegis_tools::*;
-use aegis_validate::{SqliValidator, SsrfValidator, ValidatorRegistry, XssValidator, ProbeClient};
+use aegis_knowledge::PatternLibrary;
+use aegis_validate::{CmdInjectionValidator, FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator, ValidatorRegistry, XssValidator};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ pub struct RunArgs {
     pub hitl: bool,
     pub mock: bool,
     pub artifacts_dir: Option<PathBuf>,
+    pub samples: usize,
 }
 
 fn mock_provider_for(target_url: String) -> ProviderFor {
@@ -66,7 +68,7 @@ fn mock_provider_for(target_url: String) -> ProviderFor {
                             tool_call_id: None,
                         };
                     }
-                    let class = ["Sqli", "Xss", "Ssrf"]
+                    let class = ["Sqli", "Xss", "Ssrf", "CmdInjection", "Ssti", "FilePath"]
                         .iter()
                         .find(|c| objective.contains(**c))
                         .copied()
@@ -96,7 +98,11 @@ fn mock_provider_for(target_url: String) -> ProviderFor {
                             id: "t1".into(),
                             name: "validator_submit".into(),
                             arguments: json!({
-                                "class": class.to_lowercase(),
+                                "class": match class {
+                                    "CmdInjection" => "cmd".to_string(),
+                                    "FilePath" => "file_path".to_string(),
+                                    other => other.to_lowercase(),
+                                },
                                 "severity": "high",
                                 "title": format!("{class} in param {param} at {url}"),
                                 "evidence": {"url": url, "param": param, "payload": "test"},
@@ -216,6 +222,9 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     )
     .await?;
     let oob_base = format!("http://{oob_addr}");
+    let patterns = Arc::new(Mutex::new(PatternLibrary::load(
+        &aegis_knowledge::patterns::default_path(),
+    )));
 
     // --- channels & shared state ---
     let (findings_tx, findings_rx) = mpsc::channel(256);
@@ -246,10 +255,13 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     validators.register(Arc::new(SqliValidator { probe: probe.clone() }));
     validators.register(Arc::new(XssValidator { probe: probe.clone() }));
     validators.register(Arc::new(SsrfValidator {
-        probe,
+        probe: probe.clone(),
         oob: oob_store,
         oob_base: oob_base.clone(),
     }));
+    validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
+    validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
+    validators.register(Arc::new(FilePathValidator { probe }));
 
     // --- providers ---
     let target_url = scope
@@ -282,6 +294,8 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         solver_turns: 24,
         discovery_turns: 24,
         artifacts_dir: artifacts_dir.clone(),
+        samples: args.samples,
+        patterns: patterns.clone(),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -321,6 +335,23 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         s.usd,
         report_path.display()
     );
+
+    // Experience flywheel: persist learned patterns.
+    patterns.lock().unwrap().save(&aegis_knowledge::patterns::default_path()).ok();
+    patterns.lock().unwrap().save(&artifacts_dir.join("patterns.jsonl")).ok();
+
+    // Blue/purple loop: detections + replay + patch advisories.
+    if matches!(mode, Mode::Blue | Mode::Purple) {
+        let rep = aegis_blue::run_blue(&result.verified, &artifacts_dir)?;
+        println!(
+            "blue loop: {} detection rule(s), {} replays ({} alerts fired), {} patch advisories -> {}",
+            rep.detections.len(),
+            rep.replays.len(),
+            rep.replays.iter().filter(|r| r.alert_fired).count(),
+            rep.patch_advisories.len(),
+            artifacts_dir.join("blue_report.json").display()
+        );
+    }
 
     backend.destroy(handle).await.ok();
     Ok(())

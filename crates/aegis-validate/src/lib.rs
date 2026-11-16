@@ -5,9 +5,12 @@
 //! OOB interaction (own interactsh-class server), request replay,
 //! sanitizer/crash checks. Nothing enters the report unverified.
 
+pub mod cmd;
+pub mod file_path;
 pub mod finding;
 pub mod probe;
 pub mod sqli;
+pub mod ssti;
 pub mod ssrf;
 pub mod verdict;
 pub mod validator;
@@ -15,7 +18,10 @@ pub mod xss;
 
 pub use finding::{Finding, FindingClass, Severity};
 pub use probe::{ProbeClient, ProbeResponse};
+pub use cmd::CmdInjectionValidator;
+pub use file_path::FilePathValidator;
 pub use sqli::SqliValidator;
+pub use ssti::SstiValidator;
 pub use ssrf::SsrfValidator;
 pub use verdict::Verdict;
 pub use validator::{Validator, ValidatorRegistry};

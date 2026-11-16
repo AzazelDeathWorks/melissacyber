@@ -17,10 +17,14 @@ pub struct EndpointTask {
 }
 
 /// Solver classes spawned per parameterized endpoint (Faz 1 set).
+/// Classes swept per parameterized endpoint (Faz 2 set).
 pub const MVP_CLASSES: &[FindingClass] = &[
     FindingClass::Sqli,
     FindingClass::Xss,
     FindingClass::Ssrf,
+    FindingClass::CmdInjection,
+    FindingClass::Ssti,
+    FindingClass::FilePath,
 ];
 
 pub struct Coordinator {

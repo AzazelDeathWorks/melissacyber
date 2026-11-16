@@ -15,3 +15,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
+reqwest = { workspace = true }
+aegis-validate = { path = "../aegis-validate" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }
