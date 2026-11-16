@@ -1,0 +1,4 @@
+name: cloud
+version: 0.1.0
+agents: [cloud-mapper,creds-agent]
+validators: [ssrf]

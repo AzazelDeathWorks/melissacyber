@@ -1,0 +1,4 @@
+name: network
+version: 0.1.0
+agents: [ad-kerberos-solver,creds-agent]
+validators: [cmd_injection]

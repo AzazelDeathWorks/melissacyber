@@ -190,9 +190,7 @@ async fn main() -> anyhow::Result<()> {
             println!("report {engagement} -> {format}");
         }
         Cmd::Pack { sub } => match sub {
-            PackCmd::List => {
-                println!("domain packs (Faz 1): web\nroadmap: api network-ad cloud binary mobile smart-contract llm-target supply-chain saas-config iot");
-            }
+            PackCmd::List => run_pipeline::pack_list(),
             PackCmd::Install { name } => println!("install pack {name}"),
             PackCmd::New { name } => println!("scaffold pack {name}"),
             PackCmd::ImportAtomic { file } => {
@@ -202,9 +200,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("imported {} step(s) -> {}", doc["steps"].as_array().map(|s| s.len()).unwrap_or(0), out.display());
             }
         },
-        Cmd::Arena { rounds } => {
-            println!("self-play arena, {rounds} rounds (Faz 4 — needs deterministic judge + GPU budget)");
-        }
+        Cmd::Arena { rounds } => run_pipeline::arena(rounds).await?,
         Cmd::Watch { repo } => {
             println!("watch {repo:?} — delta retest on change (Faz 3)");
         }

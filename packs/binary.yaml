@@ -1,0 +1,4 @@
+name: binary
+version: 0.1.0
+agents: [binary-pwn-solver,poc-compiler]
+validators: [cmd_injection]

@@ -1,0 +1,4 @@
+name: supplychain
+version: 0.1.0
+agents: [code-mapper,dedup]
+validators: [other]

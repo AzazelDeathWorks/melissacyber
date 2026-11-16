@@ -1,0 +1,4 @@
+name: web
+version: 0.1.0
+agents: [sqli-solver,xss-solver,ssrf-solver,cmd-solver,ssti-solver,file-path-solver]
+validators: [sqli,xss,ssrf,cmd_injection,ssti,file_path]

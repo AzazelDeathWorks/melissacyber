@@ -1,0 +1,4 @@
+name: llm-target
+version: 0.1.0
+agents: [payload-forge,critic]
+validators: [other]

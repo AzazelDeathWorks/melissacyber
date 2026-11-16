@@ -1,0 +1,4 @@
+name: mobile
+version: 0.1.0
+agents: [surface-mapper]
+validators: [file_path]

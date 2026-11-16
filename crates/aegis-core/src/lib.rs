@@ -6,6 +6,7 @@
 //! so hypothesis bias never accumulates.
 
 pub mod agent;
+pub mod arena;
 pub mod budget;
 pub mod coordinator;
 pub mod engagement;
@@ -15,6 +16,7 @@ pub mod prompts;
 pub mod runner;
 pub mod spec_loader;
 
+pub use arena::{apply, append_trace, judge, rule_matches, ArenaScore, ArenaTrace};
 pub use agent::{Agent, AgentId, AgentKind, AgentSpec, AgentState};
 pub use budget::Budget;
 pub use coordinator::{Coordinator, EndpointTask};

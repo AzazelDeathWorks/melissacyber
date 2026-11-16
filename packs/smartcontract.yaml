@@ -1,0 +1,4 @@
+name: smartcontract
+version: 0.1.0
+agents: [logic-solver]
+validators: [other]

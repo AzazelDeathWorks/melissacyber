@@ -1,0 +1,4 @@
+name: api
+version: 0.1.0
+agents: [api-mapper,jwt-solver,idor-solver,authn-solver]
+validators: [sqli,xss,ssrf]

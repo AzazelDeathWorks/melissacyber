@@ -1,0 +1,4 @@
+name: iot
+version: 0.1.0
+agents: [osint-agent,network-mapper]
+validators: [cmd_injection]

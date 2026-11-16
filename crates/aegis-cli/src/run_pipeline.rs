@@ -460,3 +460,65 @@ pub async fn worker(controller: Option<String>) -> anyhow::Result<()> {
         }
     }
 }
+
+/// `aegis arena` — self-play: attacker policy vs defender policy over N
+/// rounds against a seeded vulnerable target, judged deterministically,
+/// exporting JSONL traces for future aegis-sec SFT.
+pub async fn arena(rounds: usize) -> anyhow::Result<()> {
+    use aegis_core::{apply, append_trace, judge, ArenaScore, ArenaTrace};
+    let attacks = [
+        "GET /search?q=' OR '1'='1",
+        "GET /tpl?s={{691*689}}",
+        "GET /read?f=../../../../etc/passwd",
+        "GET /exec?c=;echo AEGIS",
+    ];
+    let mut score = ArenaScore { attacker: 0, defender: 0 };
+    let trace_path = std::path::Path::new("arena_traces.jsonl");
+    let _ = std::fs::remove_file(trace_path);
+    let mut defender_rules: Vec<String> = vec![];
+    for r in 0..rounds {
+        let attack = attacks[(r as usize) % attacks.len()];
+        // Deterministic stand-in for the target: attacker "lands" when the
+        // payload class is one the seeded app is vulnerable to.
+        let response = if attack.contains("691*689") { "475906" } else { "" };
+        let (landed, detected) = judge(attack, &defender_rules, response);
+        apply(&mut score, landed, detected);
+        append_trace(trace_path, &ArenaTrace {
+            round: r as u32,
+            attack_request: attack.to_string(),
+            defender_rules: defender_rules.clone(),
+            landed,
+            detected,
+        })?;
+        // Defender learns: after an undetected hit it gains a rule.
+        if landed && !detected {
+            let sig = attack.split('?').nth(1).unwrap_or("").split('=').next().unwrap_or("");
+            defender_rules.push(format!("title: learned-{r}
+cs-uri-query|contains: '{sig}'"));
+        }
+    }
+    println!("arena done: attacker {} - defender {} (traces: arena_traces.jsonl)",
+        score.attacker, score.defender);
+    Ok(())
+}
+
+/// `aegis pack list` — enumerate installed domain packs from ./packs.
+pub fn pack_list() {
+    let mut found = vec![];
+    if let Ok(rd) = std::fs::read_dir("packs") {
+        for e in rd.flatten() {
+            if let Ok(t) = std::fs::read_to_string(e.path()) {
+                if let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&t) {
+                    found.push(format!(
+                        "{} v{} ({} agents)",
+                        v["name"].as_str().unwrap_or("?"),
+                        v["version"].as_str().unwrap_or("?"),
+                        v["agents"].as_sequence().map(|a| a.len()).unwrap_or(0)
+                    ));
+                }
+            }
+        }
+    }
+    if found.is_empty() { println!("no packs installed (see ./packs)"); }
+    for f in found { println!("pack: {f}"); }
+}
