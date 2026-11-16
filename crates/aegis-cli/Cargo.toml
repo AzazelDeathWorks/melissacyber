@@ -32,3 +32,6 @@ aegis-kg = { path = "../aegis-kg" }
 aegis-knowledge = { path = "../aegis-knowledge" }
 aegis-blue = { path = "../aegis-blue" }
 aegis-evidence = { path = "../aegis-evidence" }
+
+[dev-dependencies]
+tokio = { workspace = true }

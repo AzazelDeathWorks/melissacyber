@@ -3,8 +3,7 @@
 //!
 //! See `docs/design.md` for the architecture.
 
-mod init_wizard;
-mod run_pipeline;
+use aegis_cli::{atomic, init_wizard, run_pipeline, BackendArg, ModeArg};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -53,6 +52,9 @@ enum Cmd {
         /// Human-in-the-loop gates for dangerous actions.
         #[arg(long)]
         hitl: bool,
+        /// Deep-mode fuzz command template; '@@' is replaced by each input.
+        #[arg(long)]
+        fuzz_cmd: Option<String>,
         /// Use the scripted mock provider (tests / demos, no API key).
         #[arg(long)]
         mock: bool,
@@ -121,22 +123,10 @@ enum PackCmd {
     List,
     Install { name: String },
     New { name: String },
+    /// Import a MITRE Atomic Red Team YAML as a purple playbook.
+    ImportAtomic { file: std::path::PathBuf },
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-enum ModeArg {
-    Red,
-    Blue,
-    Purple,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum BackendArg {
-    Docker,
-    Gvisor,
-    Firecracker,
-    Host,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -162,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
             mock,
             artifacts_dir,
             samples,
+            fuzz_cmd,
         } => {
             run_pipeline::run(run_pipeline::RunArgs {
                 scope,
@@ -175,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
                 mock,
                 artifacts_dir,
                 samples,
+                fuzz_cmd,
             })
             .await?
         }
@@ -183,12 +175,10 @@ async fn main() -> anyhow::Result<()> {
             println!("(Faz 2 deliverable; run `aegis run` for the autonomous path)");
         }
         Cmd::Serve { mcp, port } => {
-            if mcp {
-                println!("MCP server on :{port} — exposing pentest/validate tools (Faz 3)");
-            }
+            run_pipeline::serve(port, mcp).await?
         }
         Cmd::Worker { controller } => {
-            println!("worker mode -> controller {controller:?} (Faz 3)");
+            run_pipeline::worker(controller).await?
         }
         Cmd::Bench { suite, limit } => {
             println!("bench {suite} limit={limit:?} — adapters land with Faz 1 tests");
@@ -205,6 +195,12 @@ async fn main() -> anyhow::Result<()> {
             }
             PackCmd::Install { name } => println!("install pack {name}"),
             PackCmd::New { name } => println!("scaffold pack {name}"),
+            PackCmd::ImportAtomic { file } => {
+                let doc = atomic::import_atomic_yaml(&std::fs::read_to_string(&file)?)?;
+                let out = file.with_extension("playbook.json");
+                std::fs::write(&out, serde_json::to_string_pretty(&doc)?)?;
+                println!("imported {} step(s) -> {}", doc["steps"].as_array().map(|s| s.len()).unwrap_or(0), out.display());
+            }
         },
         Cmd::Arena { rounds } => {
             println!("self-play arena, {rounds} rounds (Faz 4 — needs deterministic judge + GPU budget)");

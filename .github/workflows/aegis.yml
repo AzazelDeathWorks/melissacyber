@@ -1,0 +1,24 @@
+# melissacyber CI: delta pentest on every PR touching the app tree.
+# Needs scope.ci.yaml + a model key in secrets (e.g. ANTHROPIC_API_KEY).
+name: aegis
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pentest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build aegis
+        run: cargo build --release -p aegis-cli
+      - name: Run engagement
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: ./target/release/aegis-cli run --scope scope.ci.yaml --mode red --budget 5 --artifacts-dir out
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aegis-report
+          path: out/

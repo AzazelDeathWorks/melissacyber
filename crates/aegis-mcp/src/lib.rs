@@ -5,5 +5,7 @@
 //! whole harness to external agents (Claude Code, Cursor) as tools.
 
 pub mod host;
+pub mod server;
 
 pub use host::ToolServerHost;
+pub use server::{serve, McpState};
