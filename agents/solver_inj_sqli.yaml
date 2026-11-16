@@ -1,0 +1,5 @@
+kind: solver_inj_sqli
+model_role: solver
+tools: [terminal, http_client, oob_canary, scope_check, kg_query, kg_write, validator_submit]
+prompt_template: solver/sqli.jinja
+max_turns: 40

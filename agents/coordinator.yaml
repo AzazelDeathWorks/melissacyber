@@ -1,0 +1,5 @@
+kind: coordinator
+model_role: coordinator
+tools: [kg_query, kg_write, spawn_agent, budget_status, ask_human]
+prompt_template: coordinator.jinja
+max_turns: 0   # persistent

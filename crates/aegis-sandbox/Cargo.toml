@@ -1,0 +1,17 @@
+[package]
+name = "aegis-sandbox"
+description = "sandbox backends: docker | gvisor | firecracker; container lifecycle, networks, mounts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }

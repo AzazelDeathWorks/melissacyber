@@ -1,0 +1,18 @@
+[package]
+name = "aegis-kg"
+description = "engagement knowledge graph: assets, endpoints, facts, findings, attack-graph (PAG) nodes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

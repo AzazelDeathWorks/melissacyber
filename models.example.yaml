@@ -1,0 +1,6 @@
+# Role-based model routing — BYOK. Any OpenAI-compatible endpoint works.
+coordinator: anthropic/claude-opus-4.5
+solver:      openai/gpt-5.3-codex
+payload:     ollama/whiterabbitneo-70b
+triage:      ollama/foundation-sec-8b
+summarizer:  groq/llama-3.3-70b

@@ -1,0 +1,22 @@
+# melissacyber engagement scope — edit via `aegis init` or by hand.
+targets:
+  - kind: web_app
+    value: "https://app.example.com"
+  - kind: repository
+    value: "github.com/you/yourapp"
+    workspace_path: ./checkout
+
+# Domains/CIDRs the attack-box egress proxy may reach. Everything else is dropped.
+egress_allow:
+  - "app.example.com"
+  - "api.example.com"
+
+roe:
+  authorization_statement: "I am authorized to test the assets listed here."
+  allow_dos: false
+  allow_exfil: false
+  allow_persistence: false
+  allow_bruteforce: false
+  allow_social_engineering: false
+  rate_limit_rps: 10
+  hitl_required: true

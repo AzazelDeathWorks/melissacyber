@@ -1,0 +1,31 @@
+        [package]
+        name = "aegis-cli"
+        description = "melissacyber CLI: init/run/copilot/serve/worker/bench/replay/report/pack/arena/watch"
+        version.workspace = true
+        edition.workspace = true
+        license.workspace = true
+        authors.workspace = true
+        repository.workspace = true
+
+        [dependencies]
+serde = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+aegis-core = { path = "../aegis-core" }
+aegis-gateway = { path = "../aegis-gateway" }
+aegis-mcp = { path = "../aegis-mcp" }
+aegis-tools = { path = "../aegis-tools" }
+aegis-sandbox = { path = "../aegis-sandbox" }
+aegis-scope = { path = "../aegis-scope" }
+aegis-validate = { path = "../aegis-validate" }
+aegis-kg = { path = "../aegis-kg" }
+aegis-knowledge = { path = "../aegis-knowledge" }
+aegis-blue = { path = "../aegis-blue" }
+aegis-evidence = { path = "../aegis-evidence" }
