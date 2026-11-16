@@ -47,7 +47,23 @@ fn to_wire(m: &Message) -> Value {
         "content": m.content,
     });
     if !m.tool_calls.is_empty() {
-        v["tool_calls"] = serde_json::to_value(&m.tool_calls).unwrap_or_default();
+        // OpenAI wire format: {id, type:"function", function:{name, arguments:<json string>}}
+        v["tool_calls"] = serde_json::Value::Array(
+            m.tool_calls
+                .iter()
+                .map(|c| {
+                    let args = match &c.arguments {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {"name": c.name, "arguments": args},
+                    })
+                })
+                .collect(),
+        );
     }
     if m.role == Role::Tool {
         if let Some(id) = m.tool_call_id.clone() {

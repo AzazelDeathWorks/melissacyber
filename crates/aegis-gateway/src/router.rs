@@ -39,9 +39,8 @@ fn env_key(name: &str) -> Option<String> {
 /// Parse a model spec into a provider instance.
 pub fn build_provider(spec: &str) -> Result<Arc<dyn LlmProvider>, ProviderError> {
     if let Some(rest) = spec.strip_prefix("custom|") {
-        let mut it = rest.splitn(2, '/');
-        let base = it.next().unwrap_or("");
-        let model = it.next().unwrap_or("");
+        // base may contain "https://…" — split on the LAST '/'.
+        let (base, model) = rest.rsplit_once('/').unwrap_or(("", ""));
         if base.is_empty() || model.is_empty() {
             return Err(ProviderError::NotConfigured(format!(
                 "custom spec needs custom|<base_url>/<model>, got {spec}"

@@ -1,0 +1,5 @@
+# role -> model spec. All roles on Experiential gateway qwen4-max.
+coordinator: custom|https://api.experientiallabs.ai/v1/qwen4-max
+solver: custom|https://api.experientiallabs.ai/v1/qwen4-max
+discovery: custom|https://api.experientiallabs.ai/v1/qwen4-max
+critic: custom|https://api.experientiallabs.ai/v1/qwen4-max
