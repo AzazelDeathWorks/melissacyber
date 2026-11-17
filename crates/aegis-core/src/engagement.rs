@@ -69,6 +69,8 @@ pub struct EngagementCtx {
     pub resume_keys: Arc<Mutex<HashSet<(String, String, String)>>>,
     /// packs/ dir for domain-pack hints injected into objectives.
     pub packs_dir: std::path::PathBuf,
+    /// Policy broker — every tool call is gated/audited when set.
+    pub policy: Option<std::sync::Arc<aegis_tools::broker::PolicyBroker>>,
 }
 
 #[derive(Debug)]
@@ -134,6 +136,7 @@ pub async fn run_engagement(
             ctx.discovery_turns,
             ctx.spend.clone(),
             ctx.prices.get("discovery").copied(),
+            ctx.policy.as_deref(),
         )
         .await?;
         info!(turns = outcome.turns, reason = %outcome.finished_reason, "discovery done");
@@ -225,9 +228,10 @@ pub async fn run_engagement(
             let permit = sem.clone();
             let price = ctx.prices.get("solver").copied();
             let tdir = ctx.traces_dir.clone();
+            let policy = ctx.policy.clone();
             handles.push(tokio::spawn(async move {
                 let _p = permit.acquire().await.unwrap();
-                let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price).await;
+                let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price, policy.as_deref()).await;
                 if let Ok(o) = &r {
                     let tid = Uuid::new_v4();
                     let _ = std::fs::write(
@@ -260,9 +264,10 @@ pub async fn run_engagement(
         let permit = sem.clone();
         let price = ctx.prices.get("solver").copied();
         let tdir = ctx.traces_dir.clone();
+        let policy = ctx.policy.clone();
         handles.push(tokio::spawn(async move {
             let _p = permit.acquire().await.unwrap();
-            let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price).await;
+            let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price, policy.as_deref()).await;
             if let Ok(o) = &r {
                 let tid = Uuid::new_v4();
                 let _ = std::fs::write(
@@ -481,6 +486,7 @@ pub async fn run_engagement(
                 ctx.solver_turns,
                 ctx.spend.clone(),
                 ctx.prices.get("solver").copied(),
+                ctx.policy.as_deref(),
             )
             .await;
         }
@@ -530,7 +536,7 @@ pub async fn run_engagement(
         let tdir = ctx.traces_dir.clone();
         escalation_runs += 1;
         solver_runs += 1;
-        if let Ok(o) = run_agent(provider, &reg, "solver", sys, objective.clone(), ctx.solver_turns, spend, price).await {
+        if let Ok(o) = run_agent(provider, &reg, "solver", sys, objective.clone(), ctx.solver_turns, spend, price, ctx.policy.as_deref()).await {
             let _ = std::fs::write(
                 tdir.join(format!("solver-escalation-{}.jsonl", Uuid::new_v4())),
                 o.transcript.iter().map(|m| serde_json::to_string(m).unwrap_or_default()).collect::<Vec<_>>().join("\n"),

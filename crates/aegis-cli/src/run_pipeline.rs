@@ -392,6 +392,23 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         }
     }
 
+    let kill = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let policy = Arc::new(aegis_tools::broker::PolicyBroker::new(
+        if scope.roe.allow_dos {
+            aegis_tools::broker::ActionClass::PostExploit
+        } else {
+            aegis_tools::broker::ActionClass::ExploitPoc
+        },
+        scope.roe.allow_dos,
+        artifacts_dir.join("audit.jsonl"),
+        kill.clone(),
+    ));
+    let kill_for_signal = kill.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        kill_for_signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::warn!("kill switch engaged — refusing new actions");
+    });
     let mut ctx = EngagementCtx {
         scope: scope.clone(),
         registry: Arc::new(registry),
@@ -418,6 +435,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         skip_discovery: args.resume,
         resume_keys: Arc::new(std::sync::Mutex::new(load_resume_keys(&artifacts_dir))),
         packs_dir: std::path::PathBuf::from("packs"),
+        policy: Some(policy.clone()),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -723,6 +741,7 @@ async fn run_worker_job(
         objective.to_string(),
         turns,
         spend,
+        None,
         None,
     )
     .await?;

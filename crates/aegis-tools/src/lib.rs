@@ -4,6 +4,7 @@
 //! quality beats tool count (Project Naptime principle #3). Every tool
 //! speaks structured I/O and is sandbox-scoped.
 
+pub mod broker;
 pub mod impls;
 pub mod registry;
 pub mod spec;

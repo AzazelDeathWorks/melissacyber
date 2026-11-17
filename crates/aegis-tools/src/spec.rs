@@ -26,6 +26,10 @@ pub enum ToolError {
     Sandbox(String),
     #[error("timeout")]
     Timeout,
+    #[error("policy: {0}")]
+    Policy(String),
+    #[error("net error: {0}")]
+    Net(String),
 }
 
 /// Tier-A wrappers (implemented inside the sandbox or against its

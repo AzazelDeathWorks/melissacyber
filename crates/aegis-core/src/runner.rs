@@ -69,6 +69,7 @@ pub async fn run_agent(
     max_turns: u32,
     spend: Arc<Mutex<Spend>>,
     price: Option<(f64, f64)>,
+    policy: Option<&aegis_tools::broker::PolicyBroker>,
 ) -> anyhow::Result<AgentOutcome> {
     let tools: Vec<GwToolSpec> = registry
         .for_role(role)
@@ -145,9 +146,15 @@ pub async fn run_agent(
 
         for call in calls {
             let result = match reg_tools.iter().find(|t| t.spec().name == call.name) {
-                Some(tool) => match tool.call(call.arguments.clone()).await {
-                    Ok(o) => o.data.to_string(),
-                    Err(e) => format!("tool error: {e}"),
+                Some(tool) => match policy {
+                    Some(b) => match b.dispatch(tool, call.arguments.clone(), role).await {
+                        Ok(o) => o.data.to_string(),
+                        Err(e) => format!("tool error: {e}"),
+                    },
+                    None => match tool.call(call.arguments.clone()).await {
+                        Ok(o) => o.data.to_string(),
+                        Err(e) => format!("tool error: {e}"),
+                    },
                 },
                 None => format!("unknown tool '{}'", call.name),
             };

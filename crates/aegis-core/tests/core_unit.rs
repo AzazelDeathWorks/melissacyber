@@ -40,7 +40,7 @@ async fn run_agent_dispatches_tools_then_completes() {
     let mut reg = ToolRegistry::default();
     reg.register(Arc::new(Echo));
     let spend = Arc::new(Mutex::new(Spend::default()));
-    let out = run_agent(provider, &reg, "solver", "sys".into(), "task".into(), 8, spend, None)
+    let out = run_agent(provider, &reg, "solver", "sys".into(), "task".into(), 8, spend, None, None)
         .await
         .unwrap();
     assert_eq!(out.finished_reason, "completed");
@@ -62,7 +62,7 @@ async fn run_agent_unknown_tool_does_not_crash() {
     }]));
     let reg = ToolRegistry::default();
     let spend = Arc::new(Mutex::new(Spend::default()));
-    let out = run_agent(provider, &reg, "solver", "s".into(), "t".into(), 4, spend, None)
+    let out = run_agent(provider, &reg, "solver", "s".into(), "t".into(), 4, spend, None, None)
         .await
         .unwrap();
     assert!(out.transcript.iter().any(|m| m.content.contains("unknown tool")));
@@ -80,7 +80,7 @@ async fn run_agent_respects_max_turns() {
     let mut reg = ToolRegistry::default();
     reg.register(Arc::new(Echo));
     let spend = Arc::new(Mutex::new(Spend::default()));
-    let out = run_agent(provider, &reg, "solver", "s".into(), "t".into(), 3, spend, None)
+    let out = run_agent(provider, &reg, "solver", "s".into(), "t".into(), 3, spend, None, None)
         .await
         .unwrap();
     assert_eq!(out.finished_reason, "max_turns");
