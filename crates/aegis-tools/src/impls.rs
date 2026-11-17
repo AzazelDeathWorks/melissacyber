@@ -1415,3 +1415,18 @@ impl BrowserSteerTool {
         Ok((dom, final_url, results))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_input_value;
+
+    #[test]
+    fn csrf_token_extracted_both_attr_orders() {
+        let a = r#"<form><input type="hidden" name="user_token" value="abc123"/></form>"#;
+        assert_eq!(extract_input_value(a, "user_token").as_deref(), Some("abc123"));
+        let b = r#"<input value='tok99' name='user_token' type='hidden'>"#;
+        assert_eq!(extract_input_value(b, "user_token").as_deref(), Some("tok99"));
+        let c = r#"<input type="hidden" name="other" value="x">"#;
+        assert_eq!(extract_input_value(c, "user_token"), None);
+    }
+}
