@@ -239,6 +239,16 @@ const SECRET_SIGS: &[&str] = &[
     "passwd", "BEGIN RSA", "BEGIN OPENSSH",
 ];
 
+// Verbose-error / stack-trace signatures: an error page that leaks these
+// is a disclosure finding even on 4xx/5xx (framework internals, file
+// paths, SQL engine names are the leak itself).
+const ERROR_SIGS: &[&str] = &[
+    "Traceback (most recent call last)", "node_modules/",
+    "SequelizeDatabaseError", "SqliteError", "NullPointerException",
+    "java.lang.", ".py\", line", "at org.", "at com.", "at Module._compile",
+    "\"stack\":", "Microsoft.AspNetCore", "System.IO.",
+];
+
 #[async_trait::async_trait]
 impl Validator for InfoDisclosureValidator {
     fn class(&self) -> FindingClass {
@@ -253,7 +263,21 @@ impl Validator for InfoDisclosureValidator {
         let Ok(r) = r else {
             return Verdict::Rejected { reason: "probe failed".into() };
         };
+        // Verbose-error disclosure is a finding at ANY status — the 500
+        // page leaking a stack trace is the vuln, not a failed request.
+        for sig in ERROR_SIGS {
+            if r.body.contains(*sig) {
+                return Verdict::Verified {
+                    reproduction: format!("GET {url} -> verbose error signature '{sig}' leaked (status {})", r.status),
+                };
+            }
+        }
         if !(200..300).contains(&r.status) {
+            // The leak may need the solver's exact request shape (POST
+            // body, headers) — replay the evidence before giving up.
+            if let Ok(reproduction) = crate::validator::marker_replay(&self.probe, f).await {
+                return Verdict::Verified { reproduction };
+            }
             return Verdict::Rejected {
                 reason: format!("status {}", r.status),
             };
@@ -289,7 +313,12 @@ impl Validator for InfoDisclosureValidator {
                 };
             }
         }
-        // A body with real content but no markers is just a 200 page.
+        // A body with real content but no markers is just a 200 page —
+        // but the leak may only trigger on the solver's exact request
+        // shape (POST body, method), so replay the evidence first.
+        if let Ok(reproduction) = crate::validator::marker_replay(&self.probe, f).await {
+            return Verdict::Verified { reproduction };
+        }
         if r.body.len() < 20 {
             return Verdict::Rejected {
                 reason: format!("status {} / body too small", r.status),
