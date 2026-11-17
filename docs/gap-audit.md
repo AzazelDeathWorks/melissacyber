@@ -176,4 +176,5 @@ P2 — shipped (commit 275e9e6): real headless Chrome `browser` tool (post-JS DO
 - Semantic recall (TF-IDF cosine over verified patterns, pgvector-swap-ready): shipped (G5)
 - SelfOp prompt bandit (UCB1 + evolved variants, ~/.aegis/selfop.json): shipped (G5)
 - Real HITL gate (pending-file protocol + `aegis gate` decide cmd): shipped (G5)
-- Remaining known limits: pgvector backend (interface swap), browser steering
+- Browser steering (CDP: click/type/eval/scroll/shot in one live page): shipped (G6)
+- Remaining known limits: pgvector backend (interface swap)
