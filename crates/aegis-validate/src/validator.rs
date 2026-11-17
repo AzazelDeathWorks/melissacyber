@@ -282,6 +282,75 @@ pub fn extract_markers(ev: &serde_json::Value) -> Vec<String> {
     found
 }
 
+/// Shared marker-replay check: replay the evidence's declared request
+/// (any method/params/headers/body) and require at least one marker
+/// candidate — expect/marker field, or mined via extract_markers — to be
+/// present in the replayed body AND absent from a plain-GET baseline.
+/// Returns the reproduction description on success.
+pub async fn marker_replay(
+    probe: &crate::probe::ProbeClient,
+    f: &crate::finding::Finding,
+) -> Result<String, String> {
+    let req = &f.evidence["request"];
+    let url = req["url"]
+        .as_str()
+        .or_else(|| f.evidence["url"].as_str())
+        .ok_or_else(|| "evidence missing request.url".to_string())?;
+    let mut candidates: Vec<String> = f.evidence["expect"]
+        .as_str()
+        .or_else(|| f.evidence["marker"].as_str())
+        .map(|m| vec![m.to_string()])
+        .unwrap_or_else(|| extract_markers(&f.evidence));
+    candidates.retain(|c| c.len() >= 4);
+    if candidates.is_empty() {
+        return Err("evidence missing expect/marker".into());
+    }
+    let method = req["method"].as_str().unwrap_or("GET");
+    let hdr_src = req["headers"]
+        .as_object()
+        .or_else(|| f.evidence["headers"].as_object());
+    let hdrs: Vec<(String, String)> = hdr_src
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let body = req["body"]
+        .as_str()
+        .or_else(|| f.evidence["body"].as_str())
+        .map(String::from);
+    let params: std::collections::HashMap<String, String> = req["params"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let r = probe
+        .send(method, url, &params, &hdrs, body)
+        .await
+        .map_err(|_| "replay request failed".to_string())?;
+    let base_body = probe
+        .get2(url, &std::collections::HashMap::new(), &[])
+        .await
+        .map(|b| b.body)
+        .unwrap_or_default();
+    for expect in &candidates {
+        if r.body.contains(expect.as_str()) && !base_body.contains(expect.as_str()) {
+            return Ok(format!(
+                "replayed {method} {url} -> marker '{expect}' in response, absent in baseline"
+            ));
+        }
+    }
+    Err(format!(
+        "replayed request produced none of {} marker candidate(s)",
+        candidates.len()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

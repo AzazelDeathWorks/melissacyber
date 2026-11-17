@@ -151,8 +151,17 @@ impl Validator for SqliValidator {
             }
         }
 
+        // 5. UNION / marker-based: the solver's own demonstrated request
+        //    is replayed — its marker (declared or mined from evidence)
+        //    must appear in the response and be absent in baseline. This
+        //    covers UNION-based exfil (e.g. UNION SELECT sqlite_version())
+        //    that none of the differential checks above can see.
+        if let Ok(reproduction) = crate::validator::marker_replay(&self.probe, f).await {
+            return Verdict::Verified { reproduction };
+        }
+
         Verdict::Rejected {
-            reason: "no error signature, boolean differential, time delay, or auth-bypass reproduced".into(),
+            reason: "no error signature, boolean differential, time delay, auth-bypass, or marker replay reproduced".into(),
         }
     }
 }
