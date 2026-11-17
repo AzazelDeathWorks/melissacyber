@@ -166,3 +166,11 @@ P0 — all fixed: report repro/rejected section, redirect scope bypass, retry/ba
 P1 — shipped: re-planning escalation wave, param-less sweeps (InfoDisclosure+Cors), parallel intake, dedup, traces/, journal.jsonl, auth_login+session store, persistent shell, portscan/dns_lookup/web_inspect/file ops, OOB full capture + DNS listener, JWT/CORS/XXE/InfoDisclosure validators, sqli Dice+multi-sample timing, prices->real USD spend, untrusted-output wrapping, real worker, LLM arena attacker, SARIF, CI (cargo test + lab engagement).
 
 P2 — shipped (commit 275e9e6): real headless Chrome `browser` tool (post-JS DOM + link/form/script extraction), `tmux` interactive-session tool (msfconsole/sqlmap REPLs), `--resume` (kg.json + verified_keys restore, discovery skipped), pack hints injected into solver objectives, IP-literal normalization (127.1/hex/octal/::1 bypasses closed), CVSS 3.1 estimates in report, `pack install/new/remove`, host-scoped few-shot (cross-target leak closed). Remaining honest gaps: browser has no steering (single-shot render, no click/fill), tmux needs tmux in the sandbox image (HostBackend fine), resume restores dedup+KG but not in-flight solver state.
+
+## REDCELL spec status (post-G4)
+- Policy broker + action classes + kill switch + secrets slots: shipped
+- 18 validator classes: shipped (10 → +8 web2 validators)
+- Reachability prefilter + second verifier + NeedsRetry/Informational: shipped
+- LATS route search (UCB, masking, pivot, decay) + milestones + bounty dual-mode + funnel: shipped
+- Exploit-craft (gdb_debug, payload_mutator), meta-tooling (define_tool), reflections, CWE/PDF, runsc/kata tiers: shipped
+- Remaining known limits: pgvector recall (jsonl KG), SelfOp prompt mutation, real HITL UI gate (env-driven), browser steering
