@@ -1,5 +1,6 @@
 //! Concrete Tier-A tool implementations.
 
+use crate::registry::ToolRegistry;
 use crate::spec::{Tool, ToolError, ToolOutput, ToolSpec};
 use aegis_evidence::ArtifactStore;
 use aegis_kg::{KnowledgeGraph, Node, NodeKind};
@@ -988,6 +989,216 @@ impl Tool for TmuxTool {
             "kill" => format!("tmux kill-session -t '{sess}'", sess = esc(sess)),
             a => return Err(ToolError::Sandbox(format!("bad action {a}"))),
         };
+        self.backend
+            .exec(&self.handle, &[&cmd])
+            .await
+            .map(|o| out(json!({"output": o})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
+    }
+}
+
+// ---------- exploit-craft: gdb debugging + payload mutation ----------
+
+/// Stateful-ish binary debugging via batched GDB commands (pwndbg
+/// inside the attack image if present). Breakpoints, regs, mem, stack.
+pub struct GdbDebugTool {
+    pub backend: Arc<dyn SandboxBackend>,
+    pub handle: SandboxHandle,
+}
+
+#[async_trait::async_trait]
+impl Tool for GdbDebugTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "gdb_debug",
+            "Debug a binary in the sandbox with gdb: checksec, disasm, break/run, registers, memory/stack reads. Batch commands per call.",
+            json!({"type":"object","properties":{
+                "binary":{"type":"string"},
+                "commands":{"type":"array","items":{"type":"string"},"description":"gdb commands e.g. ['checksec','b *main','run < input','info registers']"},
+                "stdin_file":{"type":"string"}
+            },"required":["binary","commands"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let bin = arg_str(&args, "binary")?;
+        let cmds = args["commands"]
+            .as_array()
+            .ok_or_else(|| ToolError::Sandbox("commands must be array".into()))?
+            .iter()
+            .filter_map(|c| c.as_str().map(String::from))
+            .collect::<Vec<_>>();
+        let script = cmds.join("\\n").replace('\'', "'\\''");
+        let cmd = format!(
+            "echo '{script}' > /tmp/gdb-cmds && gdb -q -batch -x /tmp/gdb-cmds '{bin}' 2>&1 | tail -150",
+            script = script,
+            bin = bin.replace('\'', "'\\''"),
+        );
+        self.backend
+            .exec(&self.handle, &[&cmd])
+            .await
+            .map(|o| out(json!({"output": o})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
+    }
+}
+
+/// Deterministic payload mutator — encodings, case tricks, comment
+/// injection, unicode, chunked. Pure code; the model gets variants to try.
+pub struct PayloadMutatorTool;
+
+#[async_trait::async_trait]
+impl Tool for PayloadMutatorTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "payload_mutator",
+            "Generate mutated variants of a payload: url/base64/hex/entity encodings, case alternation, comment splitting, double-encoding, null bytes.",
+            json!({"type":"object","properties":{
+                "payload":{"type":"string"},
+                "family":{"type":"string","enum":["encode","split","case","all"],"default":"all"}
+            },"required":["payload"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let p = arg_str(&args, "payload")?;
+        let mut out_v: Vec<String> = vec![p.to_string()];
+        out_v.push(urlencoding(p));
+        out_v.push(urlencoding(&urlencoding(p)));
+        out_v.push(base64ish(p));
+        out_v.push(p.chars().map(|c| format!("%{:02x}", c as u32)).collect::<String>());
+        out_v.push(case_alt(p));
+        out_v.push(p.chars().map(|c| format!("&#x{:x};", c as u32)).collect::<String>());
+        let p = p.to_string();
+        // comment-split for sqli/xss bypass
+        if p.contains(' ') {
+            out_v.push(p.replace(' ', "/**/"));
+            out_v.push(p.replace(' ', "%09"));
+            out_v.push(p.replace(' ', "%0a"));
+        }
+        out_v.push(format!("%00{p}"));
+        out_v.push(format!("{p}%00"));
+        let dedup: Vec<String> = out_v
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        out(json!({"variants": dedup}))
+    }
+}
+
+fn urlencoding(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02x}")
+            }
+        })
+        .collect()
+}
+fn base64ish(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::new();
+    for c in s.as_bytes().chunks(3) {
+        let b = [c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        for (sh, ok) in [(18, true), (12, c.len() > 1), (6, c.len() > 2), (0, c.len() > 3)] {
+            if ok {
+                o.push(T[((n >> sh) & 63) as usize] as char);
+            } else {
+                o.push('=');
+            }
+        }
+    }
+    o
+}
+fn case_alt(s: &str) -> String {
+    s.chars()
+        .enumerate()
+        .map(|(i, c)| if i % 2 == 0 { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() })
+        .collect()
+}
+
+// ---------- meta-tooling: agent-authored tools, policy-checked ----------
+
+/// An agent writes a small declarative tool (name + shell template); the
+/// broker registers it for this session after schema checks. Commands run
+/// in the sandbox like everything else.
+pub struct DefineTool {
+    pub registry: Arc<ToolRegistry>,
+    pub backend: Arc<dyn SandboxBackend>,
+    pub handle: SandboxHandle,
+}
+
+#[async_trait::async_trait]
+impl Tool for DefineTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "define_tool",
+            "Author a new tool for this session: {name, description, command_template}. The template runs in the sandbox with {arg} placeholders substituted. Subject to policy review.",
+            json!({"type":"object","properties":{
+                "name":{"type":"string"},
+                "description":{"type":"string"},
+                "command_template":{"type":"string"},
+                "arg_names":{"type":"array","items":{"type":"string"}}
+            },"required":["name","description","command_template"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let name = arg_str(&args, "name")?;
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.len() > 40 {
+            return Err(ToolError::Sandbox("bad tool name".into()));
+        }
+        let desc = arg_str(&args, "description")?;
+        let tpl = arg_str(&args, "command_template")?;
+        // Policy review: no destructive primitives, no network out except
+        // through normal channels (curl allowed — egress proxy enforces scope).
+        let banned = ["rm -rf /", ":(){", "mkfs", "dd if=", "shutdown", "reboot", "kill -9 -1", "> /dev/sd"];
+        if banned.iter().any(|b| tpl.contains(b)) {
+            return Err(ToolError::Policy("template rejected by policy review".into()));
+        }
+        let arg_names = args["arg_names"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let tool = DynTool {
+            spec: ToolSpec {
+                name: name.to_string(),
+                description: format!("[agent-authored] {desc}"),
+                schema: json!({"type":"object","properties":{}}),
+                roles: vec!["*".into()],
+            },
+            template: tpl.to_string(),
+            arg_names,
+            backend: self.backend.clone(),
+            handle: self.handle.clone(),
+        };
+        self.registry.register(Arc::new(tool));
+        out(json!({"registered": name, "note": "tool available for the rest of this session"}))
+    }
+}
+
+struct DynTool {
+    spec: ToolSpec,
+    template: String,
+    arg_names: Vec<String>,
+    backend: Arc<dyn SandboxBackend>,
+    handle: SandboxHandle,
+}
+
+#[async_trait::async_trait]
+impl Tool for DynTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let mut cmd = self.template.clone();
+        for n in &self.arg_names {
+            let v = args[n].as_str().unwrap_or("");
+            cmd = cmd.replace(&format!("{{{n}}}"), &format!("'{}'", v.replace('\'', "'\\''")));
+        }
         self.backend
             .exec(&self.handle, &[&cmd])
             .await

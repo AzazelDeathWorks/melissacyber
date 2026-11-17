@@ -300,7 +300,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     let artifact_store = Arc::new(Mutex::new(ArtifactStore::default()));
 
     // --- tool registry ---
-    let mut registry = ToolRegistry::default();
+    let registry = Arc::new(ToolRegistry::default());
     let session_store = Arc::new(Mutex::new(impls::SessionStore::default()));
     registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
     registry.register(Arc::new(impls::ShellTool {
@@ -343,6 +343,26 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     registry.register(Arc::new(SpawnAgentTool { tx: spawn_tx }));
     registry.register(Arc::new(BudgetTool { spend: spend.clone(), max_usd: Some(args.budget) }));
     registry.register(Arc::new(ArtifactTool { dir: artifacts_dir.clone(), store: artifact_store.clone() }));
+    registry.register(Arc::new(impls::TmuxTool {
+        backend: backend.clone(),
+        handle: handle.clone(),
+    }));
+    registry.register(Arc::new(impls::GdbDebugTool {
+        backend: backend.clone(),
+        handle: handle.clone(),
+    }));
+    registry.register(Arc::new(impls::PayloadMutatorTool));
+    registry.register(Arc::new(impls::BrowserTool {
+        backend: backend.clone(),
+        handle: handle.clone(),
+        allow: allowlist.clone(),
+        chrome_path: which_chrome().unwrap_or_else(|_| "google-chrome".into()),
+    }));
+    registry.register(Arc::new(impls::DefineTool {
+        registry: registry.clone(),
+        backend: backend.clone(),
+        handle: handle.clone(),
+    }));
 
     // --- validators (deterministic, non-AI) ---
     let mut validators = ValidatorRegistry::default();
@@ -421,7 +441,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     });
     let mut ctx = EngagementCtx {
         scope: scope.clone(),
-        registry: Arc::new(registry),
+        registry: registry.clone(),
         findings_rx,
         spawn_rx,
         validators: Arc::new(validators),
@@ -523,6 +543,8 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     }
     let report_path = artifacts_dir.join("report.md");
     std::fs::write(&report_path, &report)?;
+    write_reflections(&artifacts_dir, &engagement_id.to_string(), &result.verified, &result.rejected_list);
+    render_pdf(&report_path);
     // SARIF for GitHub code-scanning / other SAST dashboards.
     let rules: Vec<serde_json::Value> = result
         .verified
@@ -744,7 +766,7 @@ async fn run_worker_job(
             egress_allow: vec![],
         })
         .await?;
-    let mut registry = ToolRegistry::default();
+    let registry = Arc::new(ToolRegistry::default());
     registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
     registry.register(Arc::new(HttpTool {
         client: reqwest::Client::builder()
@@ -1007,4 +1029,86 @@ fn cvss_estimate(class: &aegis_validate::FindingClass, severity: aegis_validate:
         S::Info => base * 0.2,
     }
     .min(10.0f64)
+}
+
+
+/// OWASP/CWE mapping per class — report linkage.
+fn cwe_for(class: &aegis_validate::FindingClass) -> &'static str {
+    use aegis_validate::FindingClass as C;
+    match class {
+        C::Sqli => "CWE-89", C::Nosqli => "CWE-943", C::Xss => "CWE-79",
+        C::Ssrf => "CWE-918", C::CmdInjection => "CWE-78", C::Ssti => "CWE-1336",
+        C::FilePath => "CWE-22", C::Xxe => "CWE-611", C::Cors => "CWE-942",
+        C::SessionJwt => "CWE-347", C::Authn => "CWE-287", C::AuthzIdor => "CWE-639",
+        C::Csrf => "CWE-352", C::OpenRedirect => "CWE-601",
+        C::HostHeader => "CWE-644", C::Secrets => "CWE-798",
+        C::FileUpload => "CWE-434", C::Deserialization => "CWE-502",
+        C::Race => "CWE-362", C::Smuggling => "CWE-444", C::BusinessLogic => "CWE-840",
+        C::Crypto => "CWE-327", C::Crash => "CWE-248",
+        C::InfoDisclosure => "CWE-200", C::Other => "CWE-1035",
+    }
+}
+
+/// Structured reflection (AlphaHack-style): one record per validated
+/// outcome — what worked, what failed, the abstracted lesson.
+fn write_reflections(
+    dir: &std::path::Path,
+    engagement_id: &str,
+    verified: &[(aegis_validate::Finding, aegis_validate::Verdict)],
+    rejected: &[(String, String)],
+) {
+    use std::io::Write;
+    let mut f = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("reflections.jsonl"))
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    for (fnd, _) in verified {
+        let rec = serde_json::json!({
+            "engagement": engagement_id,
+            "outcome": "verified",
+            "class": format!("{:?}", fnd.class),
+            "severity": format!("{:?}", fnd.severity),
+            "url": fnd.evidence["url"],
+            "param": fnd.evidence["param"],
+            "payload": fnd.evidence["payload"],
+            "abstracted_lesson": format!("{:?} at this param shape was reproducible — prioritize similar surfaces", fnd.class),
+        });
+        let _ = writeln!(f, "{}", rec);
+    }
+    for (title, reason) in rejected {
+        let rec = serde_json::json!({
+            "engagement": engagement_id,
+            "outcome": "rejected",
+            "title": title,
+            "failure_reason": reason,
+            "abstracted_lesson": format!("claim failed validation: {reason}"),
+        });
+        let _ = writeln!(f, "{}", rec);
+    }
+}
+
+/// Best-effort PDF render of the markdown report via headless chrome.
+fn render_pdf(md_path: &std::path::Path) {
+    let Ok(chrome) = which_chrome() else { return };
+    let Ok(md) = std::fs::read_to_string(md_path) else { return };
+    let html = format!(
+        "<!doctype html><html><body style='font-family:monospace;white-space:pre-wrap'>{}</body></html>",
+        md.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    );
+    let tmp = md_path.with_extension("report.html");
+    if std::fs::write(&tmp, html).is_err() {
+        return;
+    }
+    let pdf = md_path.with_extension("pdf");
+    let _ = std::process::Command::new(chrome)
+        .args([
+            "--headless=new", "--disable-gpu", "--no-sandbox",
+            &format!("--print-to-pdf={}", pdf.display()),
+            tmp.to_string_lossy().as_ref(),
+        ])
+        .output();
 }

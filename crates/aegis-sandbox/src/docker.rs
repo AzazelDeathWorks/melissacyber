@@ -6,7 +6,7 @@
 //!   aegis-egress-<id> proxy process bound on the network gateway
 //!   aegis-box-<id>    attack container (cap-drop ALL, no-new-privs)
 
-use crate::backend::{SandboxBackend, SandboxHandle, SandboxSpec};
+use crate::backend::{BackendKind, SandboxBackend, SandboxHandle, SandboxSpec};
 use crate::egress::{Allowlist, EgressProxy};
 use std::net::{IpAddr, SocketAddr};
 use tokio::process::Command;
@@ -87,6 +87,15 @@ impl SandboxBackend for DockerBackend {
             "-e".into(), format!("HTTPS_PROXY={proxy_url}"),
             "-e".into(), "NO_PROXY=localhost,127.0.0.1".into(),
         ];
+        // Sandbox tiers: gVisor/Kata isolate via OCI runtime when installed.
+        let runtime = match spec.backend {
+            BackendKind::GVisor => Some("runsc"),
+            BackendKind::Firecracker => Some("kata-runtime"),
+            _ => None,
+        };
+        if let Some(rt) = runtime {
+            args.extend(["--runtime".to_string(), rt.to_string()]);
+        }
         for m in &spec.mounts {
             args.extend(["-v".to_string(), m.clone()]);
         }
