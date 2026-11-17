@@ -37,10 +37,13 @@ pub fn refusal_block() -> &'static str {
 pub fn validator_contract() -> &'static str {
     "FINDING CONTRACT:\n\
     - A finding is a RUMOR until validator_submit proves it. Claim nothing\n\
-      you cannot demonstrate. Include in evidence: url, param, payload,\n\
-      observed response — enough for non-AI code to reproduce it.\n\
-    - Prefer provable classes (injection, XSS, SSRF) over speculation.\n\
-    - Use oob_canary for anything blind."
+      you cannot demonstrate. Submit ONLY positive, reproduced findings.\n\
+    - evidence MUST be this JSON shape (validators replay it verbatim):\n\
+        {\"request\":{\"method\":\"GET|POST\",\"url\":\"...\",\"headers\":{...},\"params\":{...},\"body\":\"...\"},\n\
+         \"param\":\"<bare name — no annotations like 'u (query)'>\",\"payload\":\"...\",\"expect\":\"<marker string that MUST appear in the replayed response>\"}\n\
+    - Headers you forged (auth tokens, X-Internal-*) go in request.headers.\n\
+    - For blind channels use oob_canary and give its URL in payload.\n\
+    - Prefer provable classes (injection, XSS, SSRF) over speculation."
 }
 
 pub fn solver_system(scope: &Scope) -> String {

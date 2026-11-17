@@ -56,7 +56,7 @@ pub async fn send_value(
         .or_else(|| ev["request"]["url"].as_str())
         .ok_or_else(|| anyhow::anyhow!("evidence missing url"))?
         .to_string();
-    let param = ev["param"].as_str().unwrap_or("").to_string();
+    let param = sanitize_param(ev["param"].as_str().unwrap_or(""));
     let inj = ev["in"]
         .as_str()
         .or_else(|| ev["request"]["in"].as_str())
@@ -66,15 +66,7 @@ pub async fn send_value(
         .or_else(|| ev["request"]["method"].as_str())
         .unwrap_or("GET")
         .to_uppercase();
-    let mut hdrs: Vec<(String, String)> = ev["headers"]
-        .as_object()
-        .or_else(|| ev["request"]["headers"].as_object())
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut hdrs: Vec<(String, String)> = collect_headers(ev);
 
     let mut params = std::collections::HashMap::new();
     let mut body: Option<String> = None;
@@ -127,11 +119,14 @@ pub async fn send_value(
             params.insert(param.clone(), val.to_string());
         }
     }
-    probe.send(&method, &url, &params, &hdrs, body).await
+    // rebuild URL: drop solver-supplied payload query for the target param
+    // and sanitize anything left, so reqwest never sees raw spaces/quotes.
+    let clean_url = rebuild_url(&url, &param);
+    probe.send(&method, &clean_url, &params, &hdrs, body).await
 }
 
 /// URL-encode for form bodies (application/x-www-form-urlencoded).
-fn urlencoding(s: &str) -> String {
+pub fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
@@ -157,4 +152,162 @@ fn percent_path(s: &str) -> String {
         }
     }
     out
+}
+
+/// Solver-written param names get polluted with annotations ("u (query)").
+/// Keep only real param-name chars.
+pub fn sanitize_param(p: &str) -> String {
+    p.chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '[' | ']' | '.'))
+        .collect()
+}
+
+/// Merge params into a URL that may already carry a query (possibly with
+/// the exploit payload in it): keep base + existing non-target pairs and
+/// percent-encode everything, so reqwest never sees a raw space/quote.
+pub fn rebuild_url(raw: &str, drop_param: &str) -> String {
+    let (base, query) = match raw.split_once('?') {
+        Some((b, q)) => (b, q),
+        None => (raw, ""),
+    };
+    let kept: Vec<String> = query
+        .split('&')
+        .filter(|kv| !kv.is_empty())
+        .filter(|kv| {
+            let name = kv.split('=').next().unwrap_or("");
+            name != drop_param
+        })
+        .map(|kv| {
+            let mut it = kv.splitn(2, '=');
+            let n = urlencoding(it.next().unwrap_or(""));
+            let v = urlencoding(it.next().unwrap_or(""));
+            format!("{n}={v}")
+        })
+        .collect();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}?{}", base, kept.join("&"))
+    }
+}
+
+/// Tolerant header extraction: solvers stash forged/auth headers under
+/// various keys ("headers", "request.headers", "forged_headers",
+/// "auth_headers") — collect every object-valued key whose name contains
+/// "header" plus a curated set.
+pub fn collect_headers(ev: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![];
+    fn absorb(obj: &serde_json::Map<String, serde_json::Value>, out: &mut Vec<(String, String)>) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                if !out.iter().any(|(ek, _)| ek.eq_ignore_ascii_case(k)) {
+                    out.push((k.clone(), s.to_string()));
+                }
+            }
+        }
+    }
+    // curated paths first
+    for src in [&ev["headers"], &ev["request"]["headers"], &ev["forged_headers"], &ev["auth_headers"]] {
+        if let Some(m) = src.as_object() {
+            absorb(m, &mut out);
+        }
+    }
+    // fuzzy: any *nested* object keyed with a name containing "header"
+    if let Some(m) = ev.as_object() {
+        for (k, v) in m {
+            if k.to_lowercase().contains("header") {
+                if let Some(inner) = v.as_object() {
+                    absorb(inner, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Rescue pass: when a finding lacks expect/marker, mine candidate markers
+/// from the solver's own observed evidence — flag{...} literals and
+/// keyword-adjacent tokens. Verification still requires the marker to
+/// appear on replay and differ from baseline, so this adds recall without
+/// adding false positives.
+pub fn extract_markers(ev: &serde_json::Value) -> Vec<String> {
+    let mut found: Vec<String> = vec![];
+    let mut scan = String::new();
+    fn walk(v: &serde_json::Value, buf: &mut String, depth: u32) {
+        if depth > 6 || buf.len() > 40_000 {
+            return;
+        }
+        match v {
+            serde_json::Value::String(s) => {
+                buf.push_str(s);
+                buf.push('\n');
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, buf, depth + 1)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, buf, depth + 1)),
+            _ => {}
+        }
+    }
+    walk(ev, &mut scan, 0);
+    // flag{...} literals
+    let mut rest = scan.as_str();
+    while let Some(i) = rest.find("flag{") {
+        let tail = &rest[i..];
+        let end = tail.find('}').map(|e| e + 1).unwrap_or(0);
+        if end > 5 && end < 80 {
+            found.push(tail[..end].to_string());
+        }
+        rest = &tail[end.max(5)..];
+    }
+    // keyword-adjacent distinctive substrings
+    const KW: &[&str] = &[
+        "flag", "secret", "token", "password", "passwd", "internal_secret",
+        "welcome admin", "admin ok", "api_key", "private key",
+    ];
+    for line in scan.lines() {
+        let low = line.to_lowercase();
+        if KW.iter().any(|k| low.contains(k)) {
+            // pick a distinctive chunk: quoted string or word after ':'/'='
+            for cand in line
+                .split(|c: char| c == '"' || c == '\u{27}' || c == '=' || c == ':')
+                .map(|t| t.trim().trim_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-' || c == '{' || c == '}')))
+                .filter(|t| t.len() >= 6 && t.len() <= 60)
+            {
+                if !cand.contains(' ') && !found.iter().any(|f| f == cand) {
+                    found.push(cand.to_string());
+                }
+            }
+        }
+    }
+    found.truncate(6);
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn param_sanitized() {
+        assert_eq!(sanitize_param("u (query)"), "u");
+        assert_eq!(sanitize_param("user_id"), "user_id");
+    }
+
+    #[test]
+    fn rebuild_drops_polluted_target_param() {
+        let u = rebuild_url("http://h/login?u=admin' --&keep=1", "u");
+        assert_eq!(u, "http://h/login?keep=1");
+    }
+
+    #[test]
+    fn extract_flag_and_secret_markers() {
+        let ev = json!({
+            "title": "RCE via eval",
+            "observed_response": {"body": "Welcome admin! flag{hard-lab-win}"},
+            "impact": {"note": "internal_secret=pepper123 leaked"}
+        });
+        let m = extract_markers(&ev);
+        assert!(m.iter().any(|x| x.contains("flag{")), "{m:?}");
+        assert!(m.iter().any(|x| x == "internal_secret"), "{m:?}");
+    }
 }

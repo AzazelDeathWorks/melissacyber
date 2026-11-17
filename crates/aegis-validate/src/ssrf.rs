@@ -57,7 +57,7 @@ impl Validator for SsrfValidator {
             }
         }
         Verdict::Rejected {
-            reason: "no OOB interaction observed within 5s".into(),
+            reason: "no OOB interaction observed within 10s".into(),
         }
     }
 }

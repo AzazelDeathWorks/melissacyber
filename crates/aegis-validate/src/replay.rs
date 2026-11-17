@@ -31,15 +31,18 @@ impl Validator for ReplayValidator {
         let Some(url) = url else {
             return Verdict::Rejected { reason: "evidence missing request.url".into() };
         };
-        let expect = f
+        // Explicit marker first; otherwise mine candidates from the solver's
+        // observed evidence (flag{...}, keyword-adjacent tokens) — rescue
+        // real findings that only failed the schema.
+        let mut candidates: Vec<String> = f
             .evidence["expect"]
             .as_str()
-            .or_else(|| f.evidence["marker"].as_str());
-        let Some(expect) = expect else {
+            .or_else(|| f.evidence["marker"].as_str())
+            .map(|m| vec![m.to_string()])
+            .unwrap_or_else(|| crate::validator::extract_markers(&f.evidence));
+        candidates.retain(|c| c.len() >= 4);
+        if candidates.is_empty() {
             return Verdict::Rejected { reason: "evidence missing expect/marker".into() };
-        };
-        if expect.len() < 4 {
-            return Verdict::Rejected { reason: "marker too short to be evidence".into() };
         }
         let method = req["method"].as_str().unwrap_or("GET");
         let hdr_src = req["headers"]
@@ -69,21 +72,27 @@ impl Validator for ReplayValidator {
         let Ok(r) = replay else {
             return Verdict::Rejected { reason: "replay request failed".into() };
         };
-        if !r.body.contains(expect) {
-            return Verdict::Rejected {
-                reason: format!("replayed request did not produce marker '{}'", &expect[..expect.len().min(32)]),
-            };
-        }
-        // Baseline: same URL, plain GET, no exploit context — marker must
-        // NOT appear (otherwise it's ambient output, not proof).
-        let base = self.probe.get2(url, &HashMap::new(), &[]).await;
-        if let Ok(b) = base {
-            if b.body.contains(expect) {
-                return Verdict::Rejected {
-                    reason: "marker present without exploit — ambient output, not proof".into(),
-                };
+        // Baseline once: same URL, plain GET, no exploit context.
+        let base_body = self
+            .probe
+            .get2(url, &HashMap::new(), &[])
+            .await
+            .map(|b| b.body)
+            .unwrap_or_default();
+        let mut hits = vec![];
+        for expect in &candidates {
+            if r.body.contains(expect.as_str()) && !base_body.contains(expect.as_str()) {
+                hits.push(expect.clone());
             }
         }
+        let Some(expect) = hits.into_iter().next() else {
+            return Verdict::Rejected {
+                reason: format!(
+                    "replayed request produced none of {} marker candidate(s)",
+                    candidates.len()
+                ),
+            };
+        };
         Verdict::Verified {
             reproduction: format!(
                 "replayed {method} {url} -> marker '{expect}' in response, absent in baseline",

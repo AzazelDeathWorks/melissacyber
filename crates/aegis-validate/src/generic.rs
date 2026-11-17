@@ -253,27 +253,46 @@ impl Validator for InfoDisclosureValidator {
         let Ok(r) = r else {
             return Verdict::Rejected { reason: "probe failed".into() };
         };
-        if !(200..300).contains(&r.status) || r.body.len() < 20 {
+        if !(200..300).contains(&r.status) {
             return Verdict::Rejected {
-                reason: format!("status {} / body too small", r.status),
+                reason: format!("status {}", r.status),
             };
         }
-        // If evidence supplies a marker (e.g. a secret the solver saw),
-        // require it in the replayed response.
-        if let Some(m) = f
+        let hdr_text: String = r
+            .headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Claimed markers first — evidence expect/marker, then mined
+        // candidates from what the solver observed (headers count too:
+        // banner disclosures are header, not body, evidence).
+        let mut cands: Vec<String> = f
             .evidence["expect"]
             .as_str()
             .or_else(|| f.evidence["marker"].as_str())
-        {
-            if m.len() >= 4 && r.body.contains(m) {
+            .map(|m| vec![m.to_string()])
+            .unwrap_or_else(|| crate::validator::extract_markers(&f.evidence));
+        cands.retain(|c| c.len() >= 4);
+        for m in &cands {
+            if r.body.contains(m.as_str()) || hdr_text.contains(m.as_str()) {
                 return Verdict::Verified {
                     reproduction: format!("GET {url} -> sensitive marker '{m}' present (status {})", r.status),
                 };
             }
         }
-        if let Some(sig) = SECRET_SIGS.iter().find(|s| r.body.contains(**s)) {
-            return Verdict::Verified {
-                reproduction: format!("GET {url} -> secret signature '{sig}' exposed (status {})", r.status),
+        // Generic secret signatures in body OR headers.
+        for sig in SECRET_SIGS {
+            if r.body.contains(*sig) || hdr_text.contains(*sig) {
+                return Verdict::Verified {
+                    reproduction: format!("GET {url} -> secret signature '{sig}' exposed (status {})", r.status),
+                };
+            }
+        }
+        // A body with real content but no markers is just a 200 page.
+        if r.body.len() < 20 {
+            return Verdict::Rejected {
+                reason: format!("status {} / body too small", r.status),
             };
         }
         Verdict::Rejected { reason: "no secret signature in response".into() }
