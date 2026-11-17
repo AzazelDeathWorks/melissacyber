@@ -358,6 +358,11 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         allow: allowlist.clone(),
         chrome_path: which_chrome().unwrap_or_else(|_| "google-chrome".into()),
     }));
+    registry.register(Arc::new(impls::BrowserSteerTool {
+        allow: allowlist.clone(),
+        chrome_path: which_chrome().unwrap_or_else(|_| "google-chrome".into()),
+        shots_dir: artifacts_dir.join("shots"),
+    }));
     registry.register(Arc::new(impls::DefineTool {
         registry: registry.clone(),
         backend: backend.clone(),

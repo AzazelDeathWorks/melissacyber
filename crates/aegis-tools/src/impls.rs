@@ -1206,3 +1206,151 @@ impl Tool for DynTool {
             .map_err(|e| ToolError::Sandbox(e.to_string()))
     }
 }
+
+// ---------- browser steering (CDP-driven headless chrome) ----------
+
+/// Real browser control: the agent drives a throwaway headless Chrome via
+/// CDP — navigate, click, type, evaluate JS, scroll, screenshot. Unlike the
+/// `browser` tool (one-shot DOM render), a session carries a step list
+/// executed in order inside ONE live page, enabling login flows, CSRF
+/// token submission, and DOM-XSS proof.
+pub struct BrowserSteerTool {
+    pub allow: Allowlist,
+    pub chrome_path: String,
+    /// Where screenshots land (engagement artifacts dir).
+    pub shots_dir: std::path::PathBuf,
+}
+
+fn jsq(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+#[async_trait::async_trait]
+impl Tool for BrowserSteerTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "browser_steer",
+            "Drive a live headless browser step-by-step (CDP): navigate a url, then click selectors, type into fields, run JS, scroll, screenshot. Returns final DOM+URL and per-step results. Use for login flows, multi-step forms, DOM-XSS.",
+            json!({"type":"object","properties":{
+                "url":{"type":"string"},
+                "wait_ms":{"type":"integer","default":3000},
+                "steps":{"type":"array","items":{"type":"object"},
+                    "description":"ordered actions: {click:sel}|{type:{selector,text,enter}}|{eval:js}|{wait_ms:n}|{scroll:n}|{shot:name}"}
+            },"required":["url"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let url = arg_str(&args, "url")?;
+        let host = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .unwrap_or_default();
+        if !self.allow.allows(&host) {
+            return Err(ToolError::ScopeViolation(host));
+        }
+        let wait = args["wait_ms"].as_u64().unwrap_or(3000);
+        let mut cdp = crate::cdp::Cdp::launch(&self.chrome_path)
+            .await
+            .map_err(ToolError::Sandbox)?;
+        let run = self.run_steps(&mut cdp, url, wait, &args).await;
+        let _ = cdp.close().await;
+        let (dom, final_url, results) = run?;
+        let text: String = {
+            let mut t = String::new();
+            let mut in_tag = false;
+            for c in dom.chars() {
+                match c {
+                    '<' => in_tag = true,
+                    '>' => in_tag = false,
+                    _ if !in_tag => t.push(c),
+                    _ => {}
+                }
+            }
+            t.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        // scope-check where the browser ended up
+        let end_host = reqwest::Url::parse(&final_url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .unwrap_or_default();
+        out(json!({
+            "final_url": final_url,
+            "in_scope": self.allow.allows(&end_host),
+            "steps": results,
+            "dom_len": dom.len(),
+            "text_preview": &text[..text.len().min(4000)],
+            "dom_head": &dom[..dom.len().min(2000)],
+        }))
+    }
+}
+
+impl BrowserSteerTool {
+    async fn run_steps(
+        &self,
+        cdp: &mut crate::cdp::Cdp,
+        url: &str,
+        wait: u64,
+        args: &Value,
+    ) -> Result<(String, String, Vec<Value>), ToolError> {
+        cdp.navigate(url, wait).await.map_err(ToolError::Sandbox)?;
+        let mut results = vec![];
+        if let Some(steps) = args["steps"].as_array() {
+            for step in steps {
+                let r: Value = if let Some(sel) = step["click"].as_str() {
+                    let v = cdp
+                        .eval(&format!(
+                            "(()=>{{const el=document.querySelector({});if(!el)return 'MISSING';el.scrollIntoView({{block:'center'}});el.click();return 'clicked'}})()",
+                            jsq(sel)
+                        ))
+                        .await;
+                    json!({"click": sel, "result": v.map_err(|e| serde_json::Value::String(e)).unwrap_or_else(|v| v)})
+                } else if let Some(t) = step.get("type") {
+                    let sel = t["selector"].as_str().unwrap_or("");
+                    let text = t["text"].as_str().unwrap_or("");
+                    let enter = t["enter"].as_bool().unwrap_or(false);
+                    let submit = if enter {
+                        ";const f=el.closest('form');if(f)f.requestSubmit();"
+                    } else {
+                        ""
+                    };
+                    let v = cdp
+                        .eval(&format!(
+                            "(()=>{{const el=document.querySelector({});if(!el)return 'MISSING';el.focus();el.value={};el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}})){};return 'typed'}})()",
+                            jsq(sel), jsq(text), submit
+                        ))
+                        .await;
+                    json!({"type": sel, "result": v.map_err(|e| serde_json::Value::String(e)).unwrap_or_else(|v| v)})
+                } else if let Some(js) = step["eval"].as_str() {
+                    let v = cdp.eval(js).await;
+                    json!({"eval": js, "result": v.map_err(|e| serde_json::Value::String(e)).unwrap_or_else(|v| v)})
+                } else if let Some(ms) = step["wait_ms"].as_u64() {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms.min(30_000))).await;
+                    json!({"wait_ms": ms, "result": "ok"})
+                } else if let Some(px) = step["scroll"].as_i64() {
+                    let v = cdp.eval(&format!("window.scrollBy(0,{px})")).await;
+                    json!({"scroll": px, "result": v.map_err(|e| serde_json::Value::String(e)).unwrap_or_else(|v| v)})
+                } else if let Some(name) = step["shot"].as_str() {
+                    match cdp.screenshot().await {
+                        Ok(png) => {
+                            let safe: String = name
+                                .chars()
+                                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                                .collect();
+                            std::fs::create_dir_all(&self.shots_dir).ok();
+                            let path = self.shots_dir.join(format!("{safe}.png"));
+                            let ok = std::fs::write(&path, png).is_ok();
+                            json!({"shot": name, "saved": ok, "path": path.to_string_lossy()})
+                        }
+                        Err(e) => json!({"shot": name, "error": e}),
+                    }
+                } else {
+                    json!({"error": "unknown step", "step": step})
+                };
+                results.push(r);
+            }
+        }
+        let (dom, final_url) = cdp.snapshot().await.map_err(ToolError::Sandbox)?;
+        Ok((dom, final_url, results))
+    }
+}
