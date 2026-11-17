@@ -542,7 +542,7 @@ pub async fn run_engagement(
                     .complete(
                         &[
                             Message::system(
-                                "You are a security-review critic. Given a candidate finding's JSON,                                  answer with exactly 'pass' if it is a plausible, evidence-backed                                  vulnerability claim, or 'reject' if it is slop/hallucination                                  (no concrete evidence, impossible class, or missing context).",
+                                "You are a security-review critic. Given a candidate finding's JSON,                                  reply with EXACTLY one word — 'pass' or 'reject' — nothing else.                                  'reject' ONLY when the claim is clearly fabricated: impossible vuln                                  class for the target, evidence that contradicts the claim, or no                                  evidence fields at all. A real but duplicated finding is still a                                  'pass' — dedup happens elsewhere. When in doubt: 'pass'.",
                             ),
                             Message::user(serde_json::to_string(&f).unwrap_or_default()),
                         ],
@@ -551,7 +551,14 @@ pub async fn run_engagement(
                     .await
                     .map(|r| r.message.content.to_lowercase())
                     .unwrap_or_else(|_| "pass".into());
-                if verdict_txt.contains("reject") && !verdict_txt.contains("pass") {
+                // First-token verdict only — a rambling critic ("I would
+                // not reject this") must not kill a real finding.
+                let critic_killed = verdict_txt
+                    .split(|c: char| !(c.is_alphanumeric()))
+                    .next()
+                    .map(|w| w == "reject")
+                    .unwrap_or(false);
+                if critic_killed {
                     info!(title = %f.title, "finding killed by critic");
                     *rej.lock().unwrap() += 1;
                     *ck.lock().unwrap() += 1;
