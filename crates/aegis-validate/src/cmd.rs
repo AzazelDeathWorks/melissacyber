@@ -1,15 +1,20 @@
-//! Command injection: canary-echo + timing proofs.
+//! Command injection: arithmetic-eval + timing proofs.
+//!
+//! The canary is `echo $((691*689))` — the payload string never contains
+//! the expected output `475906`, so a reflected-but-not-executed payload
+//! cannot satisfy the check (no false-positive path).
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
-use crate::validator::Validator;
+use crate::validator::{send_value, Validator};
 use crate::verdict::Verdict;
-use std::collections::HashMap;
 use std::time::Duration;
 
 pub struct CmdInjectionValidator {
     pub probe: ProbeClient,
 }
+
+const MARKER: &str = "475906"; // 691*689
 
 #[async_trait::async_trait]
 impl Validator for CmdInjectionValidator {
@@ -18,58 +23,64 @@ impl Validator for CmdInjectionValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        let hdrs = crate::validator::evidence_headers(f);
-        let (Some(url), Some(param)) = (
-            f.evidence["url"].as_str().map(|s| s.to_string()),
-            f.evidence["param"].as_str().map(|s| s.to_string()),
-        ) else {
-            return Verdict::Rejected { reason: "evidence missing url/param".into() };
-        };
-        let send = |val: String| {
-            let mut p = HashMap::new();
-            p.insert(param.clone(), val);
-            let (u, pp) = (url.clone(), p);
+        let has_url = f.evidence["url"].as_str().is_some()
+            || f.evidence["request"]["url"].as_str().is_some();
+        if !has_url {
+            return Verdict::Rejected { reason: "evidence missing url".into() };
+        }
+        let send = |val: &str| {
             let probe = self.probe.clone();
-            let h2 = hdrs.clone(); async move { probe.get2(&u, &pp, &h2).await }
+            let ev = f.evidence.clone();
+            let v = val.to_string();
+            async move { send_value(&probe, &ev, &v).await }
         };
 
-        // 1. Canary echo: injected command output must appear in response.
-        let marker = format!("aegcmd{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        // 1. Arithmetic-eval: injected command output must appear in
+        //    response. "475906" is never part of the payload text.
         for payload in [
-            format!(";echo {marker}"),
-            format!("| echo {marker}"),
-            format!("$(echo {marker})"),
-            format!("`echo {marker}`"),
-            format!("1;echo {marker}"),
+            ";echo $((691*689))".to_string(),
+            "|echo $((691*689))".to_string(),
+            "$(echo $((691*689)))".to_string(),
+            "`echo $((691*689))`".to_string(),
+            "1;echo $((691*689))".to_string(),
+            "&& echo $((691*689))".to_string(),
         ] {
-            if let Ok(r) = send(payload.clone()).await {
-                if r.body.contains(&marker) {
+            if let Ok(r) = send(&payload).await {
+                if r.body.contains(MARKER) {
                     return Verdict::Verified {
                         reproduction: format!(
-                            "GET {url}?{param}={payload} -> canary {marker} echoed in response"
+                            "injected {payload} -> $((691*689)) evaluated to {MARKER} in response"
                         ),
                     };
                 }
             }
         }
 
-        // 2. Timing: sleep injection must actually delay the response.
-        let base = send("1".into()).await;
-        if let Ok(b) = base {
-            for payload in ["; sleep 3", "| sleep 3", "&& sleep 3"] {
-                if let Ok(r) = send(payload.to_string()).await {
-                    if r.elapsed > b.elapsed + Duration::from_millis(2500) {
-                        return Verdict::Verified {
-                            reproduction: format!(
-                                "GET {url}?{param}={payload} -> {ms}ms vs {base_ms}ms baseline",
-                                ms = r.elapsed.as_millis(),
-                                base_ms = b.elapsed.as_millis()
-                            ),
-                        };
-                    }
-                }
+        // 2. Timing: sleep injection must actually delay (min of 2
+        //    payload samples vs max of 2 baseline samples).
+        let mut base_t = vec![];
+        let mut inj_t = vec![];
+        for _ in 0..2 {
+            if let Ok(b) = send("1").await {
+                base_t.push(b.elapsed);
+            }
+            if let Ok(r) = send("; sleep 3").await {
+                inj_t.push(r.elapsed);
             }
         }
-        Verdict::Rejected { reason: "no canary echo or timing delay".into() }
+        if base_t.len() == 2 && inj_t.len() == 2 {
+            base_t.sort();
+            inj_t.sort();
+            if inj_t[0] > base_t[1] + Duration::from_millis(2500) {
+                return Verdict::Verified {
+                    reproduction: format!(
+                        "injected '; sleep 3' -> {}ms vs {}ms baseline",
+                        inj_t[0].as_millis(),
+                        base_t[1].as_millis()
+                    ),
+                };
+            }
+        }
+        Verdict::Rejected { reason: "no command-evaluation or timing delay".into() }
     }
 }

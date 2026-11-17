@@ -1,10 +1,9 @@
-//! SSTI: arithmetic-evaluation proof — 7*7 must render as 49.
+//! SSTI: arithmetic-evaluation proof — 691*689 must render as 475906.
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
-use crate::validator::Validator;
+use crate::validator::{send_value, Validator};
 use crate::verdict::Verdict;
-use std::collections::HashMap;
 
 pub struct SstiValidator {
     pub probe: ProbeClient,
@@ -17,38 +16,36 @@ impl Validator for SstiValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        let hdrs = crate::validator::evidence_headers(f);
-        let (Some(url), Some(param)) = (
-            f.evidence["url"].as_str().map(|s| s.to_string()),
-            f.evidence["param"].as_str().map(|s| s.to_string()),
-        ) else {
-            return Verdict::Rejected { reason: "evidence missing url/param".into() };
-        };
-        let send = |val: String| {
-            let mut p = HashMap::new();
-            p.insert(param.clone(), val);
-            let (u, pp) = (url.clone(), p);
+        let has_url = f.evidence["url"].as_str().is_some()
+            || f.evidence["request"]["url"].as_str().is_some();
+        if !has_url {
+            return Verdict::Rejected { reason: "evidence missing url".into() };
+        }
+        let send = |val: &str| {
             let probe = self.probe.clone();
-            let h2 = hdrs.clone(); async move { probe.get2(&u, &pp, &h2).await }
+            let ev = f.evidence.clone();
+            let v = val.to_string();
+            async move { send_value(&probe, &ev, &v).await }
         };
 
-        // Baseline must not contain the evaluated marker by chance.
-        let Ok(base) = send("aegisbase".into()).await else {
+        let Ok(base) = send("aegisbase").await else {
             return Verdict::Rejected { reason: "baseline probe failed".into() };
         };
         let marker = "475906"; // 691*689 — an improbable literal
         for payload in [
-            format!("{{{{691*689}}}}"),
-            "${{691*689}}".to_string(),
-            format!("#{{691*689}}"),
-            format!("<%= 691*689 %>"),
-            format!("*{{691*689}}*"),
+            "{{691*689}}".to_string(),
+            "${691*689}".to_string(),
+            "#{691*689}".to_string(),
+            "<%= 691*689 %>".to_string(),
+            "*{691*689}*".to_string(),
+            "${T(java.lang.Math).floor(691.5*689)}".to_string(),
+            "{{range.print 475906}}".to_string(),
         ] {
-            if let Ok(r) = send(payload.clone()).await {
+            if let Ok(r) = send(&payload).await {
                 if r.body.contains(marker) && !base.body.contains(marker) {
                     return Verdict::Verified {
                         reproduction: format!(
-                            "GET {url}?{param}={payload} -> server evaluated 691*689={marker} (template engine execution)"
+                            "injected {payload} -> server evaluated 691*689={marker} (template engine execution)"
                         ),
                     };
                 }

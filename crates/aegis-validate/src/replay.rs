@@ -1,16 +1,16 @@
 //! Generic deterministic replay validator — covers FindingClass::Other
 //! (custom exploit chains, auth-forged sinks, eval RCE, flag capture).
 //!
-//! The solver must supply evidence:
-//!   { "request": {"method","url","headers":{...},"body"}, "expect": "<marker>" }
-//! We replay it and require: marker present in response AND absent from
-//! a plain baseline GET of the same URL (no payload context). Anything
-//! the solver claims, the target must literally say back.
+//! Evidence shape:
+//!   { "request": {"method","url","headers":{...},"body"},
+//!     "expect": "<marker>" }
+//! We replay it (any method/body) and require: marker present AND absent
+//! from a baseline GET without exploit context.
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
-use crate::verdict::Verdict;
 use crate::validator::Validator;
+use crate::verdict::Verdict;
 use std::collections::HashMap;
 
 pub struct ReplayValidator {
@@ -24,8 +24,6 @@ impl Validator for ReplayValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        // Accept either evidence.request.url or a flat evidence.url —
-        // solvers emit both shapes in practice.
         let req = &f.evidence["request"];
         let url = req["url"]
             .as_str()
@@ -43,6 +41,7 @@ impl Validator for ReplayValidator {
         if expect.len() < 4 {
             return Verdict::Rejected { reason: "marker too short to be evidence".into() };
         }
+        let method = req["method"].as_str().unwrap_or("GET");
         let hdr_src = req["headers"]
             .as_object()
             .or_else(|| f.evidence["headers"].as_object());
@@ -53,8 +52,20 @@ impl Validator for ReplayValidator {
                     .collect()
             })
             .unwrap_or_default();
-        // Replay the exploit request.
-        let replay = self.probe.get2(url, &HashMap::new(), &hdrs).await;
+        let body = req["body"]
+            .as_str()
+            .or_else(|| f.evidence["body"].as_str())
+            .map(String::from);
+        let params: HashMap<String, String> = req["params"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let replay = self.probe.send(method, url, &params, &hdrs, body).await;
         let Ok(r) = replay else {
             return Verdict::Rejected { reason: "replay request failed".into() };
         };
@@ -63,8 +74,8 @@ impl Validator for ReplayValidator {
                 reason: format!("replayed request did not produce marker '{}'", &expect[..expect.len().min(32)]),
             };
         }
-        // Baseline: same URL, no exploit headers — marker must NOT appear
-        // (otherwise it's ambient output, not proof of compromise).
+        // Baseline: same URL, plain GET, no exploit context — marker must
+        // NOT appear (otherwise it's ambient output, not proof).
         let base = self.probe.get2(url, &HashMap::new(), &[]).await;
         if let Ok(b) = base {
             if b.body.contains(expect) {
@@ -75,8 +86,7 @@ impl Validator for ReplayValidator {
         }
         Verdict::Verified {
             reproduction: format!(
-                "replayed {} -> marker '{}' in response, absent in baseline",
-                url, expect
+                "replayed {method} {url} -> marker '{expect}' in response, absent in baseline",
             ),
         }
     }

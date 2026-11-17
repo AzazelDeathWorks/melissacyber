@@ -3,9 +3,10 @@
 use crate::spec::{Tool, ToolError, ToolOutput, ToolSpec};
 use aegis_evidence::ArtifactStore;
 use aegis_kg::{KnowledgeGraph, Node, NodeKind};
-use aegis_sandbox::{Allowlist, SandboxBackend, SandboxHandle};
+use aegis_sandbox::{Allowlist, RateLimiter, SandboxBackend, SandboxHandle};
 use aegis_validate::{Finding, FindingClass, Severity};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -58,9 +59,20 @@ impl Tool for TerminalTool {
 
 // ---------- http_client (app-layer scope check + proxied reqwest) ----------
 
+/// Cookies captured by auth_login, keyed by host — injected into later
+/// http_client requests for the same host (session persistence).
+#[derive(Default)]
+pub struct SessionStore {
+    pub cookies: HashMap<String, String>,
+}
+
 pub struct HttpTool {
+    /// Build with redirect::Policy::none() — we follow manually so every
+    /// hop is re-checked against the egress allowlist (scope fix).
     pub client: reqwest::Client,
     pub allow: Allowlist,
+    pub limiter: Option<Arc<RateLimiter>>,
+    pub session: Arc<Mutex<SessionStore>>,
 }
 
 #[async_trait::async_trait]
@@ -88,22 +100,65 @@ impl Tool for HttpTool {
         if !self.allow.allows(host) {
             return Err(ToolError::ScopeViolation(host.into()));
         }
-        let method = args["method"].as_str().unwrap_or("GET");
-        let mut req = self.client.request(
-            method.parse().unwrap_or(reqwest::Method::GET),
-            parsed,
-        );
-        if let Some(h) = args["headers"].as_object() {
-            for (k, v) in h {
-                if let Some(vs) = v.as_str() {
-                    req = req.header(k, vs);
+        let method = args["method"].as_str().unwrap_or("GET").to_string();
+        let mut url = parsed;
+        let mut body = args["body"].as_str().map(String::from);
+        let mut hops = 0;
+        let resp = loop {
+            if let Some(l) = &self.limiter {
+                l.wait().await;
+            }
+            let mut req = self.client.request(
+                method.parse().unwrap_or(reqwest::Method::GET),
+                url.clone(),
+            );
+            if let Some(h) = args["headers"].as_object() {
+                for (k, v) in h {
+                    if let Some(vs) = v.as_str() {
+                        req = req.header(k, vs);
+                    }
                 }
             }
-        }
-        if let Some(b) = args["body"].as_str() {
-            req = req.body(b.to_string());
-        }
-        let resp = req.send().await.map_err(|e| ToolError::Sandbox(e.to_string()))?;
+            // Inject stored session cookies unless caller set Cookie.
+            let has_cookie = args["headers"].as_object().map(|h| {
+                h.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            }).unwrap_or(false);
+            if !has_cookie {
+                if let Some(ck) = self
+                    .session
+                    .lock()
+                    .unwrap()
+                    .cookies
+                    .get(url.host_str().unwrap_or(""))
+                {
+                    req = req.header("cookie", ck);
+                }
+            }
+            if let Some(b) = &body {
+                req = req.body(b.clone());
+            }
+            let r = req.send().await.map_err(|e| ToolError::Sandbox(e.to_string()))?;
+            if !(300..400).contains(&r.status().as_u16()) || hops >= 6 {
+                break r;
+            }
+            let loc = r
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let next = url
+                .join(loc)
+                .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+            let nhost = next.host_str().unwrap_or("");
+            if !self.allow.allows(nhost) {
+                return Err(ToolError::ScopeViolation(format!(
+                    "redirect to out-of-scope host {nhost}"
+                )));
+            }
+            url = next;
+            body = None; // redirects replay as GET
+            hops += 1;
+        };
         let status = resp.status().as_u16();
         let headers = resp
             .headers()
@@ -299,6 +354,7 @@ impl Tool for ValidatorSubmitTool {
             "xxe" => FindingClass::Xxe,
             "smuggling" => FindingClass::Smuggling,
             "cors" => FindingClass::Cors,
+            "info_disclosure" | "info-disclosure" | "infodisclosure" | "info" => FindingClass::InfoDisclosure,
             "race" => FindingClass::Race,
             "crypto" => FindingClass::Crypto,
             "crash" => FindingClass::Crash,
@@ -437,5 +493,361 @@ impl Tool for ArtifactTool {
             content.as_bytes(),
         );
         out(json!({"artifact_id": id}))
+    }
+}
+
+// ---------- auth_login (session store -> http_client cookies) ----------
+
+pub struct AuthLoginTool {
+    pub client: reqwest::Client,
+    pub allow: Allowlist,
+    pub session: Arc<Mutex<SessionStore>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for AuthLoginTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "auth_login",
+            "Authenticate against a login endpoint and store the session cookies for later requests.",
+            json!({"type":"object","properties":{
+                "url":{"type":"string"},
+                "fields":{"type":"object","description":"form fields e.g. {username,password}"},
+                "headers":{"type":"object"}
+            },"required":["url","fields"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let url = arg_str(&args, "url")?;
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        let host = parsed.host_str().unwrap_or("").to_string();
+        if !self.allow.allows(&host) {
+            return Err(ToolError::ScopeViolation(host));
+        }
+        let fields = args["fields"].as_object().cloned().unwrap_or_default();
+        let form: Vec<(String, String)> = fields
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+            .collect();
+        let mut req = self.client.post(parsed).form(&form);
+        if let Some(h) = args["headers"].as_object() {
+            for (k, v) in h {
+                if let Some(vs) = v.as_str() {
+                    req = req.header(k, vs);
+                }
+            }
+        }
+        let resp = req.send().await.map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        let mut cookies = vec![];
+        for v in resp.headers().get_all("set-cookie") {
+            if let Ok(s) = v.to_str() {
+                if let Some(pair) = s.split(';').next() {
+                    cookies.push(pair.to_string());
+                }
+            }
+        }
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        let stored = if cookies.is_empty() {
+            // Bearer token in JSON body?
+            serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v["token"].as_str().or_else(|| v["access_token"].as_str()).map(String::from)
+                })
+                .map(|t| format!("__bearer__={t}"))
+        } else {
+            Some(cookies.join("; "))
+        };
+        if let Some(c) = &stored {
+            self.session.lock().unwrap().cookies.insert(host.clone(), c.clone());
+        }
+        out(json!({
+            "status": status,
+            "cookies_captured": cookies.len(),
+            "session_stored": stored.is_some(),
+            "body_preview": &body[..body.len().min(2000)],
+        }))
+    }
+}
+
+// ---------- shell (persistent session: cwd + env survive calls) ----------
+
+pub struct ShellState {
+    pub cwd: String,
+    pub env: HashMap<String, String>,
+}
+
+pub struct ShellTool {
+    pub backend: Arc<dyn SandboxBackend>,
+    pub handle: SandboxHandle,
+    pub sessions: Mutex<HashMap<String, ShellState>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for ShellTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "shell",
+            "Persistent interactive shell in the sandbox. cwd and env survive across calls (use session id to keep state; msfconsole-style tools via terminal if needed).",
+            json!({"type":"object","properties":{
+                "cmd":{"type":"string"},
+                "session":{"type":"string","default":"main"}
+            },"required":["cmd"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let cmd = arg_str(&args, "cmd")?.to_string();
+        let sid = args["session"].as_str().unwrap_or("main").to_string();
+        let trimmed = cmd.trim();
+        // State-changing builtins + wrapped command computed under the
+        // lock; the guard is dropped before the sandbox await (Send).
+        enum Act {
+            Reply(Value),
+            Exec(String),
+        }
+        let act = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let st = sessions.entry(sid.clone()).or_insert_with(|| ShellState {
+                cwd: "/work".into(),
+                env: HashMap::new(),
+            });
+            if let Some(rest) = trimmed.strip_prefix("cd ") {
+                let dir = rest.trim();
+                if dir.starts_with('/') {
+                    st.cwd = dir.to_string();
+                } else {
+                    st.cwd = format!("{}/{}", st.cwd.trim_end_matches('/'), dir);
+                }
+                Act::Reply(json!({"cwd": st.cwd}))
+            } else if let Some(rest) = trimmed.strip_prefix("export ") {
+                if let Some((k, v)) = rest.trim().split_once('=') {
+                    st.env.insert(k.trim().to_string(), v.trim().to_string());
+                    Act::Reply(json!({"set": k.trim()}))
+                } else {
+                    Act::Reply(json!({"error": "bad export"}))
+                }
+            } else if let Some(rest) = trimmed.strip_prefix("unset ") {
+                st.env.remove(rest.trim());
+                Act::Reply(json!({"unset": rest.trim()}))
+            } else if trimmed == "env" || trimmed == "pwd" {
+                Act::Reply(json!({"cwd": st.cwd, "env": st.env}))
+            } else {
+                let env_prefix = st
+                    .env
+                    .iter()
+                    .map(|(k, v)| format!("{}={} ", k, v.replace('\'', "'\\''")))
+                    .collect::<String>();
+                Act::Exec(format!("cd '{}' && {}{}", st.cwd, env_prefix, trimmed))
+            }
+        };
+        let wrapped = match act {
+            Act::Reply(v) => return out(v),
+            Act::Exec(w) => w,
+        };
+        self.backend
+            .exec(&self.handle, &[&wrapped])
+            .await
+            .map(|o| out(json!({"output": o, "session": sid})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
+    }
+}
+
+// ---------- portscan (native TCP connect, scope-checked) ----------
+
+pub struct PortScanTool {
+    pub allow: Allowlist,
+}
+
+#[async_trait::async_trait]
+impl Tool for PortScanTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "portscan",
+            "TCP-connect scan of common ports on an in-scope host.",
+            json!({"type":"object","properties":{
+                "host":{"type":"string"},
+                "ports":{"type":"string","description":"comma list; default top 24"}
+            },"required":["host"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let host = arg_str(&args, "host")?;
+        if !self.allow.allows(host) {
+            return Err(ToolError::ScopeViolation(host.into()));
+        }
+        let ports: Vec<u16> = args["ports"]
+            .as_str()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|p| p.trim().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    21, 22, 23, 25, 53, 80, 110, 139, 143, 443, 445, 993, 995,
+                    1433, 1521, 3306, 3389, 5432, 5900, 6379, 8000, 8080, 8443,
+                    9200,
+                ]
+            });
+        let mut open = vec![];
+        for p in ports {
+            let addr = format!("{host}:{p}");
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                std::time::Duration::from_millis(800),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                open.push(p);
+            }
+        }
+        out(json!({"host": host, "open": open}))
+    }
+}
+
+// ---------- dns_lookup ----------
+
+pub struct DnsLookupTool;
+
+#[async_trait::async_trait]
+impl Tool for DnsLookupTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "dns_lookup",
+            "Resolve a hostname to its IP addresses.",
+            json!({"type":"object","properties":{"host":{"type":"string"}},"required":["host"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let host = arg_str(&args, "host")?;
+        let ips: Vec<String> = tokio::net::lookup_host(format!("{host}:0"))
+            .await
+            .map(|it| it.map(|a| a.ip().to_string()).collect())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        out(json!({"host": host, "ips": ips}))
+    }
+}
+
+// ---------- web_inspect (lightweight page analysis; no headless) ----------
+
+pub struct WebInspectTool {
+    pub client: reqwest::Client,
+    pub allow: Allowlist,
+}
+
+#[async_trait::async_trait]
+impl Tool for WebInspectTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "web_inspect",
+            "Fetch a page and extract links, forms (action+inputs), script srcs, comments — surface for endpoint discovery.",
+            json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let url = arg_str(&args, "url")?;
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        let host = parsed.host_str().unwrap_or("");
+        if !self.allow.allows(host) {
+            return Err(ToolError::ScopeViolation(host.into()));
+        }
+        let html = self
+            .client
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?
+            .text()
+            .await
+            .unwrap_or_default();
+        let grab = |attr: &str| -> Vec<String> {
+            let mut v = vec![];
+            for m in html.match_indices(&format!("{attr}=\"")) {
+                let rest = &html[m.0 + attr.len() + 2..];
+                if let Some(end) = rest.find('"') {
+                    v.push(rest[..end].to_string());
+                }
+            }
+            v
+        };
+        let mut inputs = vec![];
+        for m in html.match_indices("name=\"") {
+            let rest = &html[m.0 + 6..];
+            if let Some(end) = rest.find('"') {
+                inputs.push(rest[..end].to_string());
+            }
+        }
+        out(json!({
+            "links": grab("href"),
+            "scripts": grab("src"),
+            "form_actions": grab("action"),
+            "input_names": inputs,
+        }))
+    }
+}
+
+// ---------- file ops (confined to the engagement artifacts dir) ----------
+
+pub struct FileReadTool {
+    pub dir: PathBuf,
+}
+pub struct FileWriteTool {
+    pub dir: PathBuf,
+}
+
+fn confined(dir: &PathBuf, name: &str) -> Result<PathBuf, ToolError> {
+    let p = dir.join(name);
+    if name.contains("..") {
+        return Err(ToolError::ScopeViolation("path escapes artifacts dir".into()));
+    }
+    Ok(p)
+}
+
+#[async_trait::async_trait]
+impl Tool for FileReadTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "file_read",
+            "Read a file from the engagement artifacts dir.",
+            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let p = confined(&self.dir, arg_str(&args, "path")?)?;
+        std::fs::read_to_string(&p)
+            .map(|c| out(json!({"path": p.display().to_string(), "content": c})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for FileWriteTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "file_write",
+            "Write a file into the engagement artifacts dir (notes, payloads, scripts).",
+            json!({"type":"object","properties":{
+                "path":{"type":"string"},"content":{"type":"string"}
+            },"required":["path","content"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let p = confined(&self.dir, arg_str(&args, "path")?)?;
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&p, arg_str(&args, "content")?)
+            .map(|_| out(json!({"written": p.display().to_string()})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
     }
 }

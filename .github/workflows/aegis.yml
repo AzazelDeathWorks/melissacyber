@@ -1,24 +1,38 @@
-# melissacyber CI: delta pentest on every PR touching the app tree.
-# Needs scope.ci.yaml + a model key in secrets (e.g. ANTHROPIC_API_KEY).
+# melissacyber CI: unit tests + a live delta pentest on every PR.
 name: aegis
 on:
   pull_request:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo test
+        run: cargo test
+
   pentest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Build aegis
         run: cargo build --release -p aegis-cli
+      - name: Start lab target
+        run: python3 lab/vulnerable_app.py & sleep 1
       - name: Run engagement
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: ./target/release/aegis-cli run --scope scope.ci.yaml --mode red --budget 5 --artifacts-dir out
+        # --mock keeps CI free of API keys; real keys upgrade it to a
+        # full LLM engagement automatically.
+        run: ./target/release/aegis-cli run --scope scope.ci.yaml --mode red --budget 5 --artifacts-dir out --mock --timeout-secs 300
         continue-on-error: true
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: aegis-report
           path: out/

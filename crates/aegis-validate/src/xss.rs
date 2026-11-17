@@ -3,9 +3,8 @@
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
+use crate::validator::{send_value, Validator};
 use crate::verdict::Verdict;
-use crate::validator::Validator;
-use std::collections::HashMap;
 
 pub struct XssValidator {
     pub probe: ProbeClient,
@@ -18,19 +17,15 @@ impl Validator for XssValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        let hdrs = crate::validator::evidence_headers(f);
-        let (Some(url), Some(param)) = (
-            f.evidence["url"].as_str().map(|s| s.to_string()),
-            f.evidence["param"].as_str().map(|s| s.to_string()),
-        ) else {
-            return Verdict::Rejected { reason: "evidence missing url/param".into() };
-        };
+        let has_url = f.evidence["url"].as_str().is_some()
+            || f.evidence["request"]["url"].as_str().is_some();
+        if !has_url {
+            return Verdict::Rejected { reason: "evidence missing url".into() };
+        }
 
         let marker = format!("aegxs{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
         let payload = format!("\"><svg/onload={}>", marker);
-        let mut p = HashMap::new();
-        p.insert(param.clone(), payload.clone());
-        let resp = match self.probe.get2(&url, &p, &hdrs).await {
+        let resp = match send_value(&self.probe, &f.evidence, &payload).await {
             Ok(r) => r,
             Err(e) => return Verdict::Rejected { reason: format!("probe failed: {e}") },
         };
@@ -40,7 +35,7 @@ impl Validator for XssValidator {
         if resp.body.contains(&payload) {
             return Verdict::Verified {
                 reproduction: format!(
-                    "GET {url}?{param}=<injected> -> reflected unescaped marker {marker} in HTML context"
+                    "injected {payload} -> reflected unescaped marker {marker} in HTML context"
                 ),
             };
         }

@@ -12,10 +12,12 @@ pub mod egress;
 pub mod oob;
 pub mod host;
 pub mod network;
+pub mod rate;
 
 pub use backend::{BackendKind, SandboxBackend, SandboxHandle, SandboxSpec};
 pub use docker::DockerBackend;
 pub use host::HostBackend;
 pub use egress::{Allowlist, EgressProxy};
-pub use oob::{run_oob_server, OobHit, OobStore};
+pub use oob::{run_oob_dns, run_oob_server, OobHit, OobStore};
 pub use network::EgressPolicy;
+pub use rate::RateLimiter;

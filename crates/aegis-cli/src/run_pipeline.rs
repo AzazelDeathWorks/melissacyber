@@ -5,12 +5,14 @@ use aegis_core::{run_engagement, Budget, EngagementCtx, Mode, ProviderFor};
 use aegis_evidence::{render_markdown, ArtifactStore};
 use aegis_gateway::{build_provider, LlmProvider, Message, MockProvider, ModelRouter, ToolCall};
 use aegis_kg::KnowledgeGraph;
-use aegis_sandbox::{Allowlist, BackendKind, DockerBackend, HostBackend, OobStore, SandboxBackend, SandboxSpec};
+use aegis_sandbox::{Allowlist, BackendKind, DockerBackend, HostBackend, OobStore, RateLimiter, SandboxBackend, SandboxSpec};
 use aegis_scope::{Scope, TargetKind};
 use aegis_tools::*;
 use aegis_knowledge::PatternLibrary;
 use aegis_validate::{
-    ReplayValidator, CmdInjectionValidator, FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator, ValidatorRegistry, XssValidator};
+    CorsValidator, InfoDisclosureValidator, JwtValidator, ReplayValidator, CmdInjectionValidator,
+    FilePathValidator, ProbeClient, SqliValidator, SsrfValidator, SstiValidator,
+    ValidatorRegistry, XxeValidator, XssValidator};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -30,6 +32,7 @@ pub struct RunArgs {
     pub artifacts_dir: Option<PathBuf>,
     pub samples: usize,
     pub fuzz_cmd: Option<String>,
+    pub timeout_secs: u64,
 }
 
 fn mock_provider_for(target_url: String) -> ProviderFor {
@@ -152,8 +155,44 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     if scope.roe.authorization_statement.is_none() {
         anyhow::bail!("scope has no authorization statement — run `aegis init`");
     }
-    if args.hitl && !scope.roe.hitl_required {
-        println!("note: --hitl passed but scope.roe.hitl_required=false");
+    if scope.roe.hitl_required && !args.hitl {
+        anyhow::bail!(
+            "scope.roe.hitl_required=true — re-run with --hitl and an operator confirming gates"
+        );
+    }
+    if let Some((start, end)) = &scope.roe.window_utc {
+        // HH:MM UTC without a chrono dep.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let now = format!("{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60);
+        let in_window = if start <= end {
+            now.as_str() >= start.as_str() && now.as_str() <= end.as_str()
+        } else {
+            // overnight window e.g. 22:00-06:00
+            now.as_str() >= start.as_str() || now.as_str() <= end.as_str()
+        };
+        if !in_window {
+            anyhow::bail!(
+                "outside authorized window (roe.window_utc {start}–{end} UTC, now {now} UTC)"
+            );
+        }
+    }
+    if !scope.roe.allow_dos {
+        // DoS-class sweeps stay off; validators only send a handful of
+        // requests each, so the cap below is the operative control.
+    }
+    // RoE rate limit — shared by probes AND the http_client tool so the
+    // cap can't be sidestepped by picking a different code path.
+    let limiter: Option<Arc<RateLimiter>> = if scope.roe.rate_limit_rps > 0 {
+        Some(Arc::new(RateLimiter::per_second(scope.roe.rate_limit_rps as f64)))
+    } else {
+        None
+    };
+    if let Some(l) = &limiter {
+        println!("roe rate limit: {} req/s enforced", scope.roe.rate_limit_rps);
+        let _ = l;
     }
 
     let mode = match (args.mode, args.deep) {
@@ -207,6 +246,18 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
             match b.provision(&spec).await {
                 Ok(h) => (b, h),
                 Err(e) => {
+                    // Host exec bypasses the network-level scope proxy —
+                    // only permit it for local lab targets.
+                    let all_local = scope.targets.iter().all(|t| {
+                        url::Url::parse(&t.value)
+                            .map(|u| matches!(u.host_str(), Some("127.0.0.1") | Some("localhost") | Some("[::1]")))
+                            .unwrap_or(true)
+                    });
+                    if !all_local {
+                        anyhow::bail!(
+                            "docker sandbox failed ({e}) and targets are not local — refusing un-sandboxed host exec (scope guarantee)"
+                        );
+                    }
                     eprintln!("docker sandbox failed ({e}); falling back to un-sandboxed host exec — lab targets only");
                     let b: Arc<dyn SandboxBackend> = Arc::new(HostBackend);
                     let h = b.provision(&spec).await?;
@@ -218,12 +269,23 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // --- OOB interaction server (our own interactsh) ---
     let oob_store = OobStore::default();
-    let oob_addr = run_oob_server(
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 0),
-        oob_store.clone(),
-    )
-    .await?;
-    let oob_base = format!("http://{oob_addr}");
+    let oob_bind: SocketAddr = std::env::var("AEGIS_OOB_BIND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| SocketAddr::new("127.0.0.1".parse().unwrap(), 0));
+    let oob_addr = run_oob_server(oob_bind, oob_store.clone()).await?;
+    // For remote targets set AEGIS_OOB_PUBLIC to the reachable URL
+    // (e.g. a tunnel); otherwise we advertise the bound address.
+    // DNS listener for blind-exfil channels (target may lack HTTP egress).
+    let dns_bind: SocketAddr = std::env::var("AEGIS_OOB_DNS_BIND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| SocketAddr::new("127.0.0.1".parse().unwrap(), 0));
+    let _ = aegis_sandbox::run_oob_dns(dns_bind, oob_store.clone())
+        .await
+        .map(|a| println!("oob dns listener on {a}"));
+    let oob_base = std::env::var("AEGIS_OOB_PUBLIC")
+        .unwrap_or_else(|_| format!("http://{oob_addr}"));
     let patterns = Arc::new(Mutex::new(PatternLibrary::load(
         &aegis_knowledge::patterns::default_path(),
     )));
@@ -237,11 +299,40 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // --- tool registry ---
     let mut registry = ToolRegistry::default();
+    let session_store = Arc::new(Mutex::new(impls::SessionStore::default()));
     registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
+    registry.register(Arc::new(impls::ShellTool {
+        backend: backend.clone(),
+        handle: handle.clone(),
+        sessions: Mutex::new(std::collections::HashMap::new()),
+    }));
+    let http_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     registry.register(Arc::new(HttpTool {
-        client: reqwest::Client::new(),
+        client: http_client.clone(),
+        allow: allowlist.clone(),
+        limiter: limiter.clone(),
+        session: session_store.clone(),
+    }));
+    registry.register(Arc::new(impls::AuthLoginTool {
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new()),
+        allow: allowlist.clone(),
+        session: session_store,
+    }));
+    registry.register(Arc::new(impls::PortScanTool { allow: allowlist.clone() }));
+    registry.register(Arc::new(impls::DnsLookupTool));
+    registry.register(Arc::new(impls::WebInspectTool {
+        client: http_client,
         allow: allowlist.clone(),
     }));
+    registry.register(Arc::new(impls::FileReadTool { dir: artifacts_dir.clone() }));
+    registry.register(Arc::new(impls::FileWriteTool { dir: artifacts_dir.clone() }));
     registry.register(Arc::new(ScopeCheckTool { allow: allowlist.clone() }));
     registry.register(Arc::new(OobTool { store: oob_store.clone(), base_url: oob_base.clone() }));
     registry.register(Arc::new(KgTool { kg: kg.clone() }));
@@ -253,7 +344,10 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // --- validators (deterministic, non-AI) ---
     let mut validators = ValidatorRegistry::default();
-    let probe = ProbeClient::new(None)?.with_allow(allowlist.clone());
+    let mut probe = ProbeClient::new(None)?.with_allow(allowlist.clone());
+    if let Some(l) = &limiter {
+        probe = probe.with_limiter(l.clone());
+    }
     validators.register(Arc::new(SqliValidator { probe: probe.clone() }));
     validators.register(Arc::new(XssValidator { probe: probe.clone() }));
     validators.register(Arc::new(SsrfValidator {
@@ -264,7 +358,11 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
     validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
     validators.register(Arc::new(FilePathValidator { probe: probe.clone() }));
-    validators.register(Arc::new(ReplayValidator { probe }));
+    validators.register(Arc::new(ReplayValidator { probe: probe.clone() }));
+    validators.register(Arc::new(CorsValidator { probe: probe.clone() }));
+    validators.register(Arc::new(JwtValidator { probe: probe.clone() }));
+    validators.register(Arc::new(XxeValidator { probe: probe.clone() }));
+    validators.register(Arc::new(InfoDisclosureValidator { probe }));
 
     // --- providers ---
     let target_url = scope
@@ -278,6 +376,20 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     } else {
         env_provider_for()?
     };
+    // Per-role USD prices from models.yaml (cost_in/cost_out), if set.
+    let mut prices: std::collections::HashMap<String, (f64, f64)> =
+        std::collections::HashMap::new();
+    if std::path::Path::new("models.yaml").exists() {
+        if let Ok(router) =
+            ModelRouter::from_yaml(&std::fs::read_to_string("models.yaml")?)
+        {
+            for role in ["solver", "discovery", "critic", "default"] {
+                if let Some(p) = router.price_for(role) {
+                    prices.insert(role.to_string(), p);
+                }
+            }
+        }
+    }
 
     let mut ctx = EngagementCtx {
         scope: scope.clone(),
@@ -299,6 +411,9 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         artifacts_dir: artifacts_dir.clone(),
         samples: args.samples,
         patterns: patterns.clone(),
+        prices,
+        traces_dir: artifacts_dir.join("traces"),
+        sweeps: true,
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -327,7 +442,23 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         }
     }
 
-    let result = run_engagement(&mut ctx, provider_for).await?;
+    let result = if args.timeout_secs > 0 {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(args.timeout_secs),
+            run_engagement(&mut ctx, provider_for),
+        )
+        .await
+        {
+            Ok(r) => r?,
+            Err(_) => {
+                eprintln!("engagement hit --timeout-secs {} — sandbox cleaned up, partial artifacts kept", args.timeout_secs);
+                backend.destroy(handle).await.ok();
+                anyhow::bail!("timeout");
+            }
+        }
+    } else {
+        run_engagement(&mut ctx, provider_for).await?
+    };
 
     // --- persist + report ---
     kg.lock().unwrap().save(&artifacts_dir.join("kg.json"))?;
@@ -335,19 +466,71 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         .verified
         .iter()
         .filter(|(_, v)| matches!(v, aegis_validate::Verdict::Verified { .. }))
-        .map(|(f, _)| {
+        .map(|(f, v)| {
             (
                 f.title.clone(),
                 format!("{:?}", f.severity).to_lowercase(),
                 format!("{:?}", f.class).to_lowercase(),
                 serde_json::to_string_pretty(&f.evidence).unwrap_or_default(),
-                String::new(),
+                match v {
+                    aegis_validate::Verdict::Verified { reproduction } => reproduction.clone(),
+                    _ => String::new(),
+                },
             )
         })
         .collect();
-    let report = render_markdown(engagement_id, &entries);
+    let mut report = render_markdown(engagement_id, &entries);
+    if !result.rejected_list.is_empty() {
+        report.push_str("
+
+## Attempted but unproven\n\n");
+        for (title, reason) in &result.rejected_list {
+            report.push_str(&format!("- **{title}** — {reason}\n"));
+        }
+    }
     let report_path = artifacts_dir.join("report.md");
     std::fs::write(&report_path, &report)?;
+    // SARIF for GitHub code-scanning / other SAST dashboards.
+    let rules: Vec<serde_json::Value> = result
+        .verified
+        .iter()
+        .filter(|(_, v)| matches!(v, aegis_validate::Verdict::Verified { .. }))
+        .map(|(f, _)| json!({"id": format!("{:?}", f.class), "name": f.title}))
+        .collect();
+    let sarif_results: Vec<serde_json::Value> = result
+        .verified
+        .iter()
+        .filter(|(_, v)| matches!(v, aegis_validate::Verdict::Verified { .. }))
+        .map(|(f, v)| {
+            let repro = match v {
+                aegis_validate::Verdict::Verified { reproduction } => reproduction.clone(),
+                _ => String::new(),
+            };
+            json!({
+                "ruleId": format!("{:?}", f.class),
+                "level": match f.severity {
+                    aegis_validate::Severity::Critical => "error",
+                    aegis_validate::Severity::High => "error",
+                    aegis_validate::Severity::Medium => "warning",
+                    _ => "note",
+                },
+                "message": {"text": format!("{} — {}", f.title, repro)},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": f.evidence["url"].as_str().unwrap_or("target")}}}],
+            })
+        })
+        .collect();
+    let sarif = json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": "melissacyber", "version": env!("CARGO_PKG_VERSION"), "rules": rules}},
+            "results": sarif_results,
+        }],
+    });
+    std::fs::write(
+        artifacts_dir.join("report.sarif"),
+        serde_json::to_string_pretty(&sarif)?,
+    )?;
 
     let s = spend.lock().unwrap();
     println!(
@@ -386,7 +569,15 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 }
 
 /// `aegis serve --mcp` — JSON-RPC tool server + worker job queue.
-pub async fn serve(port: u16, _mcp: bool) -> anyhow::Result<()> {
+/// Binds localhost by default; non-local bind requires --token.
+pub async fn serve(port: u16, _mcp: bool, bind: &str, token: Option<String>) -> anyhow::Result<()> {
+    let bind_ip: std::net::IpAddr = bind.parse()?;
+    let local = bind_ip.is_loopback();
+    if !local && token.is_none() {
+        anyhow::bail!(
+            "binding {bind} without --token would expose unauthenticated pentest tools — refused"
+        );
+    }
     let oob_store = OobStore::default();
     let oob_addr = run_oob_server(
         SocketAddr::new("127.0.0.1".parse().unwrap(), 0),
@@ -407,7 +598,11 @@ pub async fn serve(port: u16, _mcp: bool) -> anyhow::Result<()> {
     validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
     validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
     validators.register(Arc::new(FilePathValidator { probe: probe.clone() }));
-    validators.register(Arc::new(ReplayValidator { probe }));
+    validators.register(Arc::new(ReplayValidator { probe: probe.clone() }));
+    validators.register(Arc::new(CorsValidator { probe: probe.clone() }));
+    validators.register(Arc::new(JwtValidator { probe: probe.clone() }));
+    validators.register(Arc::new(XxeValidator { probe: probe.clone() }));
+    validators.register(Arc::new(InfoDisclosureValidator { probe }));
     let state = Arc::new(aegis_mcp::McpState {
         allow,
         validators: Arc::new(validators),
@@ -415,9 +610,10 @@ pub async fn serve(port: u16, _mcp: bool) -> anyhow::Result<()> {
         oob_base,
         jobs: std::sync::Mutex::new(std::collections::VecDeque::new()),
         results: std::sync::Mutex::new(vec![]),
+        token,
     });
-    println!("melissacyber server on :{port} — POST /mcp (JSON-RPC), POST/GET /jobs, POST /results");
-    aegis_mcp::serve(state, SocketAddr::new("0.0.0.0".parse().unwrap(), port)).await
+    println!("melissacyber server on {bind}:{port} — POST /mcp (JSON-RPC), POST/GET /jobs, POST /results");
+    aegis_mcp::serve(state, SocketAddr::new(bind_ip, port)).await
 }
 
 fn scope_allow_or_default() -> Vec<String> {
@@ -428,12 +624,16 @@ fn scope_allow_or_default() -> Vec<String> {
         .unwrap_or_else(|| vec!["127.0.0.1".into(), "localhost".into()])
 }
 
-/// `aegis worker` — poll the controller for jobs, run them, post results.
-/// A job is {"objective": str}; the worker executes one solver loop with
-/// the configured provider (or mock) and posts the transcript outcome.
+/// `aegis worker` — poll the controller, run each job as a real solver
+/// loop (provider + tools + validators), post verdicts back.
+/// Job: {"objective": str, "allow": ["host",...], "turns": n}
 pub async fn worker(controller: Option<String>) -> anyhow::Result<()> {
     let ctl = controller.unwrap_or_else(|| "http://127.0.0.1:7420".into());
     let client = reqwest::Client::new();
+    let provider_for = env_provider_for().ok();
+    if provider_for.is_none() {
+        eprintln!("warning: no provider configured — worker will report errors");
+    }
     println!("worker -> {ctl} (Ctrl+C to stop)");
     loop {
         let resp = client.get(format!("{ctl}/jobs")).send().await;
@@ -447,8 +647,10 @@ pub async fn worker(controller: Option<String>) -> anyhow::Result<()> {
                 let outcome = if objective.is_empty() {
                     json!({"status": "empty_job"})
                 } else {
-                    // Deterministic workers: run the validate path directly.
-                    json!({"status": "done", "objective": objective})
+                    match run_worker_job(&job, &objective, provider_for.as_ref()).await {
+                        Ok(v) => v,
+                        Err(e) => json!({"status": "error", "error": e.to_string()}),
+                    }
                 };
                 let _ = client
                     .post(format!("{ctl}/results"))
@@ -464,12 +666,99 @@ pub async fn worker(controller: Option<String>) -> anyhow::Result<()> {
     }
 }
 
+/// Execute one queued job end-to-end: solver loop -> findings ->
+/// deterministic validation -> verdicts.
+async fn run_worker_job(
+    job: &serde_json::Value,
+    objective: &str,
+    provider_for: Option<&ProviderFor>,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(pf) = provider_for else {
+        anyhow::bail!("no provider configured on this worker");
+    };
+    let Some(provider) = pf("solver") else {
+        anyhow::bail!("no provider for role 'solver'");
+    };
+    let allow = Allowlist::new(
+        &job["allow"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+            .unwrap_or_else(|| vec!["127.0.0.1".into(), "localhost".into()]),
+    );
+    let (findings_tx, mut findings_rx) = mpsc::channel(64);
+    let spend = Arc::new(Mutex::new(Spend::default()));
+    let backend: Arc<dyn SandboxBackend> = Arc::new(HostBackend);
+    let handle = backend
+        .provision(&SandboxSpec {
+            backend: BackendKind::Docker,
+            image: "host".into(),
+            cpus: 1,
+            mem_mb: 512,
+            mounts: vec![],
+            egress_allow: vec![],
+        })
+        .await?;
+    let mut registry = ToolRegistry::default();
+    registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
+    registry.register(Arc::new(HttpTool {
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?,
+        allow: allow.clone(),
+        limiter: None,
+        session: Arc::new(Mutex::new(impls::SessionStore::default())),
+    }));
+    registry.register(Arc::new(ScopeCheckTool { allow: allow.clone() }));
+    registry.register(Arc::new(ValidatorSubmitTool { tx: findings_tx }));
+    let turns = job["turns"].as_u64().unwrap_or(12) as u32;
+    let outcome = aegis_core::run_agent(
+        provider,
+        &registry,
+        "solver",
+        format!("You are a melissacyber worker solver. {}", objective),
+        objective.to_string(),
+        turns,
+        spend,
+        None,
+    )
+    .await?;
+    drop(registry);
+    // Validate whatever the solver submitted.
+    let _oob = OobStore::default();
+    let mut validators = ValidatorRegistry::default();
+    let probe = ProbeClient::new(None)?.with_allow(allow);
+    validators.register(Arc::new(SqliValidator { probe: probe.clone() }));
+    validators.register(Arc::new(XssValidator { probe: probe.clone() }));
+    validators.register(Arc::new(CmdInjectionValidator { probe: probe.clone() }));
+    validators.register(Arc::new(SstiValidator { probe: probe.clone() }));
+    validators.register(Arc::new(FilePathValidator { probe: probe.clone() }));
+    validators.register(Arc::new(ReplayValidator { probe }));
+    let mut verdicts = vec![];
+    while let Ok(f) = findings_rx.try_recv() {
+        if let Some(v) = validators.get(&f.class) {
+            let verdict = v.validate(&f).await;
+            verdicts.push(json!({
+                "title": f.title, "class": format!("{:?}", f.class),
+                "verdict": format!("{:?}", verdict),
+            }));
+        }
+    }
+    Ok(json!({
+        "status": "done",
+        "turns": outcome.turns,
+        "finished": outcome.finished_reason,
+        "verdicts": verdicts,
+    }))
+}
+
 /// `aegis arena` — self-play: attacker policy vs defender policy over N
 /// rounds against a seeded vulnerable target, judged deterministically,
 /// exporting JSONL traces for future aegis-sec SFT.
 pub async fn arena(rounds: usize) -> anyhow::Result<()> {
     use aegis_core::{apply, append_trace, judge, ArenaScore, ArenaTrace};
-    let attacks = [
+    // Attacker policy: a real provider when configured, else the seeded set.
+    let attacker = env_provider_for().ok().and_then(|pf| pf("solver"));
+    let seeded = [
         "GET /search?q=' OR '1'='1",
         "GET /tpl?s={{691*689}}",
         "GET /read?f=../../../../etc/passwd",
@@ -480,7 +769,31 @@ pub async fn arena(rounds: usize) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(trace_path);
     let mut defender_rules: Vec<String> = vec![];
     for r in 0..rounds {
-        let attack = attacks[(r as usize) % attacks.len()];
+        let attack = if let Some(p) = &attacker {
+            let msgs = vec![
+                aegis_gateway::Message::system(
+                    "You are an attacker policy in a self-play arena. Propose ONE raw HTTP attack request line targeting a vulnerable web lab, in the form 'GET /path?param=payload'. Avoid previously used payloads. Reply with ONLY the request line.",
+                ),
+                aegis_gateway::Message::user(format!(
+                    "Round {r}. Defender rules so far: {}",
+                    defender_rules.join(" | ")
+                )),
+            ];
+            match p.complete(&msgs, &[]).await {
+                Ok(c) => {
+                    let line = c.message.content.lines().next().unwrap_or("").trim().to_string();
+                    if line.starts_with("GET ") || line.starts_with("POST ") {
+                        line
+                    } else {
+                        seeded[(r as usize) % seeded.len()].to_string()
+                    }
+                }
+                Err(_) => seeded[(r as usize) % seeded.len()].to_string(),
+            }
+        } else {
+            seeded[(r as usize) % seeded.len()].to_string()
+        };
+        let attack = attack.as_str();
         // Deterministic stand-in for the target: attacker "lands" when the
         // payload class is one the seeded app is vulnerable to.
         let response = if attack.contains("691*689") { "475906" } else { "" };

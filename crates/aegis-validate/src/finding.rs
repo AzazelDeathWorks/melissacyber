@@ -21,6 +21,7 @@ pub enum FindingClass {
     Race,
     Crypto,
     Crash,
+    InfoDisclosure,
     Other,
 }
 

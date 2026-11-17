@@ -209,8 +209,8 @@ fn solver_decide(messages: &[Message]) -> Message {
     let param = objective
         .lines()
         .find_map(|l| l.strip_prefix("Parameter: "))
-        .unwrap_or("")
-        .to_string();
+        .map(|p| p.split(" (in:").next().unwrap_or(p).to_string())
+        .unwrap_or_default();
     // Submit once — after a queued tool result, finish.
     if messages.iter().any(|m| m.role == Role::Tool && m.content.contains("queued")) {
         return Message {
@@ -288,7 +288,12 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
 
     let mut registry = ToolRegistry::default();
     registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
-    registry.register(Arc::new(HttpTool { client: reqwest::Client::new(), allow: allow.clone() }));
+    registry.register(Arc::new(HttpTool {
+        client: reqwest::Client::new(),
+        allow: allow.clone(),
+        limiter: None,
+        session: Arc::new(Mutex::new(aegis_tools::SessionStore::default())),
+    }));
     registry.register(Arc::new(ScopeCheckTool { allow: allow.clone() }));
     registry.register(Arc::new(OobTool { store: oob_store.clone(), base_url: oob_base.clone() }));
     registry.register(Arc::new(KgTool { kg: kg.clone() }));
@@ -356,6 +361,9 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
         artifacts_dir: std::env::temp_dir().join("aegis-e2e"),
         samples: 1,
         patterns: Arc::new(Mutex::new(aegis_knowledge::PatternLibrary::default())),
+        prices: Default::default(),
+        traces_dir: std::env::temp_dir().join("aegis-e2e-traces"),
+        sweeps: false,
     };
 
     let result = run_engagement(&mut ctx, provider_for).await.unwrap();
@@ -403,7 +411,12 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
 #[tokio::test]
 async fn scope_violation_is_blocked_at_tool_layer() {
     let allow = Allowlist::new(&["127.0.0.1".into()]);
-    let tool = HttpTool { client: reqwest::Client::new(), allow };
+    let tool = HttpTool {
+        client: reqwest::Client::new(),
+        allow,
+        limiter: None,
+        session: Arc::new(Mutex::new(aegis_tools::SessionStore::default())),
+    };
     let out = tool.call(json!({"method":"GET","url":"http://evil.example.com/"})).await;
     assert!(out.is_err(), "out-of-scope host must be refused");
 }

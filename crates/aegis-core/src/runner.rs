@@ -1,10 +1,16 @@
 //! The agent execution loop: messages <-> provider <-> tool dispatch.
 //! Every solver runs this loop with fresh context and a single objective.
+//!
+//! Hardening: transient provider errors retry with exponential backoff +
+//! jitter; tool output is capped and wrapped in an untrusted-content
+//! marker (the target's pages are attacker-controlled); USD spend is
+//! tracked when a per-token price is configured.
 
 use aegis_gateway::{Completion, LlmProvider, Message, ToolSpec as GwToolSpec};
 use aegis_tools::{Spend, ToolRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +29,8 @@ pub struct AgentOutcome {
     pub finished_reason: String,
 }
 
+const TOOL_MAX_BYTES: usize = 32 * 1024;
+
 fn to_gw_spec(t: &aegis_tools::ToolSpec) -> GwToolSpec {
     GwToolSpec {
         kind: "function".into(),
@@ -34,8 +42,24 @@ fn to_gw_spec(t: &aegis_tools::ToolSpec) -> GwToolSpec {
     }
 }
 
+fn transient(e: &aegis_gateway::provider::ProviderError) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("timeout")
+        || s.contains("timed out")
+        || s.contains("temporar")
+        || s.contains("connection")
+        || s.contains("reset")
+        || s.contains("429")
+        || s.contains("rate")
+        || s.contains(" 502")
+        || s.contains(" 503")
+        || s.contains(" 529")
+        || s.contains("overloaded")
+}
+
 /// Run one agent to completion: assistant turn -> dispatch tool calls ->
 /// append results -> repeat. Ends on a no-tool-call reply or max_turns.
+/// `price` = (usd per 1M input tokens, per 1M output tokens) if known.
 pub async fn run_agent(
     provider: Arc<dyn LlmProvider>,
     registry: &ToolRegistry,
@@ -44,6 +68,7 @@ pub async fn run_agent(
     task: String,
     max_turns: u32,
     spend: Arc<Mutex<Spend>>,
+    price: Option<(f64, f64)>,
 ) -> anyhow::Result<AgentOutcome> {
     let tools: Vec<GwToolSpec> = registry
         .for_role(role)
@@ -52,10 +77,7 @@ pub async fn run_agent(
         .collect();
     let reg_tools = registry.for_role(role);
 
-    let mut messages = vec![
-        Message::system(system),
-        Message::user(task),
-    ];
+    let mut messages = vec![Message::system(system), Message::user(task)];
     let mut turns = 0;
     let (mut in_tok, mut out_tok) = (0u64, 0u64);
 
@@ -72,17 +94,41 @@ pub async fn run_agent(
         turns += 1;
         debug!(turn = turns, role, "agent turn");
 
+        // Retry transient provider failures (rate limits, 5xx, timeouts).
         let Completion {
             message,
             input_tokens,
             output_tokens,
-        } = provider.complete(&messages, &tools).await?;
+        } = {
+            let mut attempt = 0u32;
+            loop {
+                match provider.complete(&messages, &tools).await {
+                    Ok(c) => break c,
+                    Err(e) => {
+                        attempt += 1;
+                        if !transient(&e) || attempt > 4 {
+                            return Err(anyhow::anyhow!(
+                                "provider failed after {attempt} attempt(s): {e}"
+                            ));
+                        }
+                        let jitter = (attempt as u64 * 137) % 500;
+                        let wait =
+                            Duration::from_millis(500 * (1u64 << attempt) + jitter);
+                        warn!(attempt, ?wait, err = %e, "provider error — retrying");
+                        tokio::time::sleep(wait).await;
+                    }
+                }
+            }
+        };
         in_tok += input_tokens;
         out_tok += output_tokens;
         {
             let mut s = spend.lock().unwrap();
             s.input_tokens += input_tokens;
             s.output_tokens += output_tokens;
+            if let Some((pi, po)) = price {
+                s.usd += (input_tokens as f64 * pi + output_tokens as f64 * po) / 1e6;
+            }
         }
 
         let calls = message.tool_calls.clone();
@@ -108,7 +154,18 @@ pub async fn run_agent(
             if result.contains("scope") && result.contains("Violation") {
                 warn!(tool = call.name, "scope violation attempted");
             }
-            messages.push(Message::tool_result(call.id, result));
+            let mut result = result;
+            if result.len() > TOOL_MAX_BYTES {
+                result.truncate(TOOL_MAX_BYTES);
+                result.push_str("\n...[output truncated]");
+            }
+            // Tool output is attacker-controlled (target pages, shell
+            // output). Wrap it so the model treats it as data, not orders.
+            let wrapped = format!(
+                "<untrusted_tool_output tool=\"{}\">{}</untrusted_tool_output>",
+                call.name, result
+            );
+            messages.push(Message::tool_result(call.id, wrapped));
         }
     }
 }

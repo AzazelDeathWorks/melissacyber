@@ -2,12 +2,11 @@
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
-use crate::validator::Validator;
+use crate::validator::{send_value, Validator};
 use crate::verdict::Verdict;
-use std::collections::HashMap;
 
 const FILE_SIGS: &[&str] = &[
-    "root:x:", "root:*:", "daemon:", "[boot loader]", "[extensions]",
+    "root:x:", "root:*:", "[boot loader]", "[extensions]",
 ];
 
 pub struct FilePathValidator {
@@ -21,22 +20,19 @@ impl Validator for FilePathValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        let hdrs = crate::validator::evidence_headers(f);
-        let (Some(url), Some(param)) = (
-            f.evidence["url"].as_str().map(|s| s.to_string()),
-            f.evidence["param"].as_str().map(|s| s.to_string()),
-        ) else {
-            return Verdict::Rejected { reason: "evidence missing url/param".into() };
-        };
-        let send = |val: String| {
-            let mut p = HashMap::new();
-            p.insert(param.clone(), val);
-            let (u, pp) = (url.clone(), p);
+        let has_url = f.evidence["url"].as_str().is_some()
+            || f.evidence["request"]["url"].as_str().is_some();
+        if !has_url {
+            return Verdict::Rejected { reason: "evidence missing url".into() };
+        }
+        let send = |val: &str| {
             let probe = self.probe.clone();
-            let h2 = hdrs.clone(); async move { probe.get2(&u, &pp, &h2).await }
+            let ev = f.evidence.clone();
+            let v = val.to_string();
+            async move { send_value(&probe, &ev, &v).await }
         };
 
-        let Ok(base) = send("nonexistent_aegis".into()).await else {
+        let Ok(base) = send("nonexistent_aegis").await else {
             return Verdict::Rejected { reason: "baseline probe failed".into() };
         };
         for payload in [
@@ -45,12 +41,13 @@ impl Validator for FilePathValidator {
             "..%2f..%2f..%2fetc/passwd",
             "/etc/passwd",
             "../../../../windows/win.ini",
+            "file:///etc/passwd",
         ] {
-            if let Ok(r) = send(payload.to_string()).await {
+            if let Ok(r) = send(payload).await {
                 if let Some(sig) = FILE_SIGS.iter().find(|s| r.body.contains(**s) && !base.body.contains(**s)) {
                     return Verdict::Verified {
                         reproduction: format!(
-                            "GET {url}?{param}={payload} -> file signature '{sig}' in response"
+                            "injected {payload} -> file signature '{sig}' in response"
                         ),
                     };
                 }

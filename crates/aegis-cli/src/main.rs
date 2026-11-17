@@ -5,7 +5,7 @@
 
 use aegis_cli::{atomic, init_wizard, run_pipeline, BackendArg, ModeArg};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -64,6 +64,9 @@ enum Cmd {
         /// Sampling: solver variants per objective (sampling-and-verify).
         #[arg(long, default_value_t = 1)]
         samples: usize,
+        /// Wall-clock cap for the whole engagement, seconds (0 = none).
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
     },
     /// Interactive copilot mode: you drive, the harness executes + validates.
     Copilot {
@@ -76,6 +79,12 @@ enum Cmd {
         mcp: bool,
         #[arg(long, default_value_t = 7420)]
         port: u16,
+        /// Bind address (default 127.0.0.1 — auth token required for 0.0.0.0).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Bearer token clients must send (required when binding non-local).
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Run as a distributed worker (Faz 3).
     Worker {
@@ -153,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
             artifacts_dir,
             samples,
             fuzz_cmd,
+            timeout_secs,
         } => {
             run_pipeline::run(run_pipeline::RunArgs {
                 scope,
@@ -167,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 artifacts_dir,
                 samples,
                 fuzz_cmd,
+                timeout_secs,
             })
             .await?
         }
@@ -174,8 +185,8 @@ async fn main() -> anyhow::Result<()> {
             println!("copilot mode — interactive shell over {}", scope.display());
             println!("(Faz 2 deliverable; run `aegis run` for the autonomous path)");
         }
-        Cmd::Serve { mcp, port } => {
-            run_pipeline::serve(port, mcp).await?
+        Cmd::Serve { mcp, port, bind, token } => {
+            run_pipeline::serve(port, mcp, &bind, token).await?
         }
         Cmd::Worker { controller } => {
             run_pipeline::worker(controller).await?

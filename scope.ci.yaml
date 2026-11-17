@@ -1,0 +1,18 @@
+# CI scope: pentest the lab app spun up in the workflow job.
+targets:
+  - kind: web_app
+    value: "http://127.0.0.1:8899"
+
+egress_allow:
+  - "127.0.0.1"
+  - "localhost"
+
+roe:
+  authorization_statement: "CI run against the repo's own lab app — authorized by definition."
+  allow_dos: false
+  allow_exfil: false
+  allow_persistence: false
+  allow_bruteforce: false
+  allow_social_engineering: false
+  rate_limit_rps: 50
+  hitl_required: false

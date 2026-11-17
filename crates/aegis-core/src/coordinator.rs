@@ -9,11 +9,19 @@ use crate::pag::AttackGraph;
 use aegis_kg::NodeKind;
 use aegis_validate::FindingClass;
 
+/// One injectable parameter with where it lives in the request.
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    /// query | form | body | json | header | path — hint for solvers.
+    pub r#in: String,
+}
+
 /// One endpoint the discovery wave surfaced.
 #[derive(Debug, Clone)]
 pub struct EndpointTask {
     pub url: String,
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
 }
 
 /// Solver classes spawned per parameterized endpoint (Faz 1 set).
@@ -52,8 +60,19 @@ impl Coordinator {
                             // {name,in,confirmed} objects — take either.
                             .filter_map(|p| {
                                 p.as_str()
-                                    .or_else(|| p["name"].as_str())
-                                    .map(String::from)
+                                    .map(|n| Param {
+                                        name: n.to_string(),
+                                        r#in: "query".into(),
+                                    })
+                                    .or_else(|| {
+                                        p["name"].as_str().map(|n| Param {
+                                            name: n.to_string(),
+                                            r#in: p["in"]
+                                                .as_str()
+                                                .unwrap_or("query")
+                                                .to_string(),
+                                        })
+                                    })
                             })
                             .collect()
                     })
@@ -64,15 +83,35 @@ impl Coordinator {
     }
 
     /// One solver objective per (endpoint, param, class).
-    pub fn solver_objective(task: &EndpointTask, param: &str, class: &FindingClass) -> String {
+    pub fn solver_objective(task: &EndpointTask, param: &Param, class: &FindingClass) -> String {
         format!(
             "Objective: prove or disprove a {:?} vulnerability.\n\
-             Endpoint: {}\nParameter: {}\n\
+             Endpoint: {}\nParameter: {} (in: {})\n\
              Work the hypothesis end-to-end: craft inputs, observe\n\
              responses, and if you can demonstrate it, submit via\n\
              validator_submit with complete evidence. If disproven,\n\
              record what you tried in the KG.",
-            class, task.url, param
+            class, task.url, param.name, param.r#in
+        )
+    }
+
+    /// Param-less sweeps: classes that apply to whole endpoints/hosts
+    /// (info disclosure, CORS) — no parameter needed.
+    pub const SWEEP_CLASSES: &[FindingClass] = &[
+        FindingClass::InfoDisclosure,
+        FindingClass::Cors,
+    ];
+
+    /// Jobs for endpoints discovered with no injectable params, plus a
+    /// per-endpoint info/cors sweep regardless.
+    pub fn sweep_objective(url: &str, class: &FindingClass) -> String {
+        format!(
+            "Objective: prove or disprove a {:?} issue.\n\
+             Endpoint: {}\n\
+             Fetch the endpoint, inspect headers/body, and submit via\n\
+             validator_submit with evidence {url} (and an 'expect' marker\n\
+             for info_disclosure) if demonstrable.",
+            class, url
         )
     }
 }

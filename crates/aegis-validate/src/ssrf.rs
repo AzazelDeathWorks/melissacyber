@@ -4,10 +4,9 @@
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
+use crate::validator::{send_value, Validator};
 use crate::verdict::Verdict;
-use crate::validator::Validator;
 use aegis_sandbox::OobStore;
-use std::collections::HashMap;
 use std::time::Duration;
 
 pub struct SsrfValidator {
@@ -23,19 +22,24 @@ impl Validator for SsrfValidator {
     }
 
     async fn validate(&self, f: &Finding) -> Verdict {
-        let hdrs = crate::validator::evidence_headers(f);
-        let (Some(url), Some(param)) = (
-            f.evidence["url"].as_str().map(|s| s.to_string()),
-            f.evidence["param"].as_str().map(|s| s.to_string()),
-        ) else {
-            return Verdict::Rejected { reason: "evidence missing url/param".into() };
+        let has_url = f.evidence["url"].as_str().is_some()
+            || f.evidence["request"]["url"].as_str().is_some();
+        if !has_url {
+            return Verdict::Rejected { reason: "evidence missing url".into() };
         };
 
         let token = format!("ssrf{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let cb = format!("{}/{}/cb", self.oob_base, token);
-        let mut p = HashMap::new();
-        p.insert(param.clone(), cb.clone());
-        if let Err(e) = self.probe.get2(&url, &p, &hdrs).await {
+        // If evidence declares a param, inject there; if the evidence URL
+        // itself is the fetch-target, replay the whole request shape.
+        let mut ev = f.evidence.clone();
+        let res = if ev["param"].as_str().is_some() {
+            send_value(&self.probe, &ev, &cb).await
+        } else {
+            ev["url"] = serde_json::json!(cb);
+            send_value(&self.probe, &ev, "1").await
+        };
+        if let Err(e) = res {
             return Verdict::Rejected { reason: format!("trigger failed: {e}") };
         }
 
@@ -45,7 +49,7 @@ impl Validator for SsrfValidator {
             if !hits.is_empty() {
                 return Verdict::Verified {
                     reproduction: format!(
-                        "GET {url}?{param}={cb} -> OOB hit from {} ({} hits)",
+                        "OOB callback {cb} hit from {} ({} hits)",
                         hits[0].remote,
                         hits.len()
                     ),

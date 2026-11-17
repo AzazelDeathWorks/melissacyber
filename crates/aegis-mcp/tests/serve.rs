@@ -1,6 +1,6 @@
 use aegis_mcp::{serve, McpState};
 use aegis_sandbox::{Allowlist, OobStore, SandboxBackend};
-use aegis_validate::{FindingClass, SsrfValidator, ValidatorRegistry};
+use aegis_validate::{SsrfValidator, ValidatorRegistry};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +34,7 @@ async fn mcp_and_worker_queue_roundtrip() {
         oob_base: "http://127.0.0.1:9".into(),
         jobs: Mutex::new(Default::default()),
         results: Mutex::new(vec![]),
+        token: None,
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -25,6 +25,12 @@ pub struct RoleAssignment {
     pub model: String,
     #[serde(default)]
     pub fallback: Vec<String>,
+    /// USD per 1M input tokens (optional — enables real spend tracking).
+    #[serde(default)]
+    pub cost_in: Option<f64>,
+    /// USD per 1M output tokens.
+    #[serde(default)]
+    pub cost_out: Option<f64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -110,12 +116,20 @@ impl ModelRouter {
                     role: role.clone(),
                     model: spec,
                     fallback: vec![],
+                    cost_in: None,
+                    cost_out: None,
                 },
                 other => serde_yaml::from_value(other)?,
             };
             assignments.insert(role, ra);
         }
         Ok(Self { assignments })
+    }
+
+    /// (usd per 1M input, per 1M output) for a role, if configured.
+    pub fn price_for(&self, role: &str) -> Option<(f64, f64)> {
+        self.resolve(role)
+            .and_then(|a| a.cost_in.zip(a.cost_out))
     }
 
     pub fn resolve(&self, role: &str) -> Option<&RoleAssignment> {

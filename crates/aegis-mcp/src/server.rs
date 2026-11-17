@@ -22,6 +22,8 @@ pub struct McpState {
     /// Distributed worker queue: jobs deque'd by `aegis worker`.
     pub jobs: Mutex<VecDeque<Value>>,
     pub results: Mutex<Vec<Value>>,
+    /// Bearer token required on non-local binds (None = loopback only).
+    pub token: Option<String>,
 }
 
 fn tool_list() -> Value {
@@ -103,15 +105,54 @@ async fn handle_rpc(st: &McpState, req: &Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":result})
 }
 
-async fn read_http(sock: &mut tokio::net::TcpStream) -> Option<(String, String)> {
-    let mut buf = vec![0u8; 65536];
-    let n = sock.read(&mut buf).await.ok()?;
-    let req = String::from_utf8_lossy(&buf[..n]).to_string();
-    let (head, body) = req.split_once("\r\n\r\n").unwrap_or((&req, ""));
+/// Read one HTTP request: headers until \r\n\r\n, then body per
+/// Content-Length (loop — a single 64KB read silently truncated bodies).
+async fn read_http(
+    sock: &mut tokio::net::TcpStream,
+) -> Option<(String, Vec<(String, String)>, String)> {
+    let mut data = Vec::new();
+    let mut buf = [0u8; 8192];
+    let header_end = loop {
+        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        if data.len() > 256 * 1024 {
+            return None;
+        }
+        let n = sock.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        data.extend_from_slice(&buf[..n]);
+    };
+    let head = String::from_utf8_lossy(&data[..header_end]).to_string();
     let line = head.lines().next().unwrap_or("");
     let method = line.split_whitespace().next().unwrap_or("GET").to_string();
     let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
-    Some((method + " " + &path, body.to_string()))
+    let mut clen = 0usize;
+    let mut headers = vec![];
+    for l in head.lines().skip(1) {
+        if let Some((k, v)) = l.split_once(':') {
+            let (k, v) = (k.trim().to_string(), v.trim().to_string());
+            if k.eq_ignore_ascii_case("content-length") {
+                clen = v.parse().unwrap_or(0);
+            }
+            headers.push((k, v));
+        }
+    }
+    let mut body = data[header_end..].to_vec();
+    while body.len() < clen {
+        let n = sock.read(&mut buf).await.ok()?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&buf[..n]);
+    }
+    Some((
+        method + " " + &path,
+        headers,
+        String::from_utf8_lossy(&body[..body.len().min(clen)]).to_string(),
+    ))
 }
 
 pub async fn serve(state: Arc<McpState>, bind: SocketAddr) -> anyhow::Result<()> {
@@ -121,7 +162,19 @@ pub async fn serve(state: Arc<McpState>, bind: SocketAddr) -> anyhow::Result<()>
         let (mut sock, _) = listener.accept().await?;
         let st = state.clone();
         tokio::spawn(async move {
-            let Some((path, body)) = read_http(&mut sock).await else { return };
+            let Some((path, headers, body)) = read_http(&mut sock).await else { return };
+            // Bearer auth when a token is configured.
+            if let Some(t) = &st.token {
+                let ok = headers.iter().any(|(k, v)| {
+                    k.eq_ignore_ascii_case("authorization")
+                        && v.trim() == format!("Bearer {t}")
+                });
+                if !ok {
+                    let resp = "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n";
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    return;
+                }
+            }
             let (status, out): (&str, String) = match path.as_str() {
                 // ---- MCP JSON-RPC ----
                 p if p.ends_with("/mcp") || p == "POST /" || p == "GET /" => match serde_json::from_str::<Value>(&body) {
