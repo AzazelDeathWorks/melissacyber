@@ -105,6 +105,12 @@ pub struct PolicyBroker {
     pub health: HealthMonitor,
     /// approval-channel error text keeps the model informed.
     pub approvals_note: String,
+    /// Human-in-the-loop gate dir: pending-<id>.json is written, the broker
+    /// blocks until <id>.decision ("approve"/"deny") appears or times out.
+    pub hitl_dir: Option<PathBuf>,
+    /// How long a gated action waits for a human decision (ms).
+    pub hitl_timeout_ms: u64,
+    pending_seq: std::sync::atomic::AtomicU64,
 }
 
 impl PolicyBroker {
@@ -127,6 +133,48 @@ impl PolicyBroker {
             prev_hash: Mutex::new("genesis".into()),
             health: HealthMonitor::new(),
             approvals_note: "action blocked by policy gate".into(),
+            hitl_dir: None,
+            hitl_timeout_ms: 180_000,
+            pending_seq: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Block until a human writes `<id>.decision` in the HITL dir, the kill
+    /// switch trips, or the wait times out. Returns true when approved.
+    async fn await_human(&self, role: &str, tool: &str, args: &Value, class: ActionClass) -> bool {
+        let Some(dir) = &self.hitl_dir else { return false };
+        let _ = std::fs::create_dir_all(dir);
+        let id = format!(
+            "{}-{}",
+            HealthMonitor::now_ms(),
+            self.pending_seq.fetch_add(1, Ordering::SeqCst)
+        );
+        let req_path = dir.join(format!("pending-{id}.json"));
+        let _ = std::fs::write(
+            &req_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": id, "role": role, "tool": tool,
+                "class": class.name(), "args": args,
+                "decide": format!("aegis gate --dir {} --id {id} [--deny]", dir.display()),
+            }))
+            .unwrap_or_default(),
+        );
+        eprintln!("[hitl] PENDING {class:?} {tool} — decide: aegis gate --dir {} --id {id}", dir.display());
+        let start = std::time::Instant::now();
+        loop {
+            if self.kill.load(Ordering::SeqCst) {
+                return false;
+            }
+            if let Ok(d) = std::fs::read_to_string(dir.join(format!("{id}.decision"))) {
+                let ok = d.trim().eq_ignore_ascii_case("approve");
+                self.audit(role, tool, class, if ok { "hitl_approved" } else { "hitl_denied" });
+                return ok;
+            }
+            if start.elapsed().as_millis() as u64 > self.hitl_timeout_ms {
+                self.audit(role, tool, class, "hitl_timeout");
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
     }
 
@@ -203,11 +251,21 @@ impl PolicyBroker {
         }
         // Approval gate: above auto class needs the destructive opt-in.
         if class > self.max_auto_class && !(self.allow_destructive && class <= ActionClass::PostExploit) {
-            self.audit(role, &tool.spec().name, class, "denied");
-            return Err(ToolError::Policy(format!(
-                "action class '{}' requires approval (set scope allow flags)",
-                class.name()
-            )));
+            // HITL path: a human can approve elevated actions at runtime.
+            if self.hitl_dir.is_some() {
+                if !self.await_human(role, &tool.spec().name, &args, class).await {
+                    return Err(ToolError::Policy(format!(
+                        "action class '{}' denied by operator",
+                        class.name()
+                    )));
+                }
+            } else {
+                self.audit(role, &tool.spec().name, class, "denied");
+                return Err(ToolError::Policy(format!(
+                    "action class '{}' requires approval (set scope allow flags)",
+                    class.name()
+                )));
+            }
         }
 
         self.resolve_slots(&mut args);

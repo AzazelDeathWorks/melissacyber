@@ -423,7 +423,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     }
 
     let kill = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let policy = Arc::new(aegis_tools::broker::PolicyBroker::new(
+    let mut broker = aegis_tools::broker::PolicyBroker::new(
         if scope.roe.allow_dos {
             aegis_tools::broker::ActionClass::PostExploit
         } else {
@@ -432,7 +432,18 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         scope.roe.allow_dos,
         artifacts_dir.join("audit.jsonl"),
         kill.clone(),
-    ));
+    );
+    // --hitl: elevated action classes block on a human decision file
+    // instead of being denied outright.
+    if args.hitl {
+        broker.hitl_dir = Some(artifacts_dir.join("approvals"));
+        std::fs::create_dir_all(artifacts_dir.join("approvals")).ok();
+        println!("hitl gates: pending approvals land in {}", artifacts_dir.join("approvals").display());
+    }
+    let policy = Arc::new(broker);
+    let selfop = Arc::new(Mutex::new(aegis_knowledge::selfop::SelfOp::load(
+        &aegis_knowledge::selfop::default_path(),
+    )));
     let kill_for_signal = kill.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
@@ -467,6 +478,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         packs_dir: std::path::PathBuf::from("packs"),
         policy: Some(policy.clone()),
         bounty_sidecar: matches!(mode, Mode::Bounty),
+        selfop: selfop.clone(),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -608,6 +620,11 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // Experience flywheel: persist learned patterns.
     patterns.lock().unwrap().save(&aegis_knowledge::patterns::default_path()).ok();
+    {
+        let mut sop = selfop.lock().unwrap();
+        sop.maybe_mutate();
+        sop.save(&aegis_knowledge::selfop::default_path()).ok();
+    }
     patterns.lock().unwrap().save(&artifacts_dir.join("patterns.jsonl")).ok();
 
     // Blue/purple loop: detections + replay + patch advisories.

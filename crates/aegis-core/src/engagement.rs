@@ -7,6 +7,7 @@ use crate::prompts;
 use crate::runner::run_agent;
 use aegis_gateway::LlmProvider;
 use aegis_kg::KnowledgeGraph;
+use aegis_knowledge::selfop::SelfOp;
 use aegis_knowledge::PatternLibrary;
 use aegis_scope::Scope;
 use aegis_tools::{Spend, SpawnRequest, ToolRegistry};
@@ -76,6 +77,8 @@ pub struct EngagementCtx {
     pub policy: Option<std::sync::Arc<aegis_tools::broker::PolicyBroker>>,
     /// Bounty-hunter mode: one free agent alongside the swarm.
     pub bounty_sidecar: bool,
+    /// SelfOp bandit — solver prompt variants, rewarded by verified findings.
+    pub selfop: Arc<Mutex<aegis_knowledge::selfop::SelfOp>>,
 }
 
 #[derive(Debug)]
@@ -207,6 +210,9 @@ pub async fn run_engagement(
         .find_map(|t| reqwest::Url::parse(&t.value).ok().and_then(|u| u.host_str().map(String::from)))
         .unwrap_or_default();
     let few_shot = ctx.patterns.lock().unwrap().few_shot_for(&target_host, 5);
+    // objective key -> selfop variant id, so verdicts can reward the
+    // prompt variant that produced them.
+    let variant_map = Arc::new(Mutex::new(std::collections::HashMap::<String, String>::new()));
     let mut handles = vec![];
     let mut solver_runs = 0usize;
     // Param-less sweeps: info disclosure + CORS on every endpoint.
@@ -265,11 +271,30 @@ pub async fn run_engagement(
                     strategies[sample % strategies.len()],
                 ));
             }
-            if !few_shot.is_empty() {
-                objective.push_str(&format!("\nVerified patterns from past engagements:\n{few_shot}"));
+            // Semantic recall (pgvector-equivalent): retrieve patterns
+            // similar to THIS objective, not just the top host patterns.
+            let recalled = ctx
+                .patterns
+                .lock()
+                .unwrap()
+                .semantic_hints(&target_host, &format!("{} {} {:?}", task.url, param.name, class), 3);
+            let hint_block = if !recalled.is_empty() { recalled } else { few_shot.clone() };
+            if !hint_block.is_empty() {
+                objective.push_str(&format!("\nVerified patterns from past engagements:\n{hint_block}"));
+            }
+            let variant = ctx.selfop.lock().unwrap().pick().map(|v| (v.id.clone(), v.hint.clone()));
+            let mut sys_extra = String::new();
+            if let Some((vid, hint)) = variant {
+                variant_map
+                    .lock()
+                    .unwrap()
+                    .insert(format!("{}|{}|{:?}", task.url, param.name, class), vid);
+                if !hint.is_empty() {
+                    sys_extra = format!("\n\nStrategy hint (self-evolved): {hint}");
+                }
             }
             let reg = ctx.registry.clone();
-            let sys = prompts::solver_system(&ctx.scope);
+            let sys = prompts::solver_system(&ctx.scope) + &sys_extra;
             let spend = ctx.spend.clone();
             let turns = ctx.solver_turns;
             let permit = sem.clone();
@@ -371,6 +396,8 @@ pub async fn run_engagement(
     let patterns = ctx.patterns.clone();
     let rejected = Arc::new(Mutex::new(0usize));
     let rejected_list = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let variant_map_intake = variant_map.clone();
+    let selfop_intake = ctx.selfop.clone();
     let rej = rejected.clone();
     let rejl = rejected_list.clone();
     let cand = Arc::new(Mutex::new(0usize));
@@ -390,6 +417,8 @@ pub async fn run_engagement(
             tx: mpsc::Sender<(Finding, Verdict)>,
             critic: Option<Arc<dyn LlmProvider>>,
             patterns: Arc<Mutex<PatternLibrary>>,
+            variant_map: Arc<Mutex<std::collections::HashMap<String, String>>>,
+            selfop: Arc<Mutex<SelfOp>>,
             cand: Arc<Mutex<usize>>,
             pfk: Arc<Mutex<usize>>,
             ck: Arc<Mutex<usize>>,
@@ -481,8 +510,20 @@ pub async fn run_engagement(
                                 &format!("{}{}?{}=", host, path, param),
                                 reproduction,
                             );
+                            if let Some(vid) = variant_map.lock().unwrap()
+                                .get(&format!("{}|{}|{:?}", f.evidence["url"].as_str().unwrap_or(""), param, f.class))
+                                .cloned()
+                            {
+                                selfop.lock().unwrap().record(&vid, true);
+                            }
                         }
                         Verdict::Rejected { reason } => {
+                            if let Some(vid) = variant_map.lock().unwrap()
+                                .get(&format!("{}|{}|{:?}", f.evidence["url"].as_str().unwrap_or(""), f.evidence["param"].as_str().unwrap_or(""), f.class))
+                                .cloned()
+                            {
+                                selfop.lock().unwrap().record(&vid, false);
+                            }
                             info!(title=%f.title,%reason,"finding rejected");
                             *rej.lock().unwrap() += 1;
                             rejl.lock().unwrap()
@@ -512,6 +553,8 @@ pub async fn run_engagement(
                            tx: &mpsc::Sender<(Finding, Verdict)>,
                            critic: &Option<Arc<dyn LlmProvider>>,
                            patterns: &Arc<Mutex<PatternLibrary>>,
+                           vmap: &Arc<Mutex<std::collections::HashMap<String, String>>>,
+                           sop: &Arc<Mutex<SelfOp>>,
                            cand: &Arc<Mutex<usize>>,
                            pfk: &Arc<Mutex<usize>>,
                            ck: &Arc<Mutex<usize>>,
@@ -528,6 +571,8 @@ pub async fn run_engagement(
                 tx.clone(),
                 critic.clone(),
                 patterns.clone(),
+                vmap.clone(),
+                sop.clone(),
                 cand.clone(),
                 pfk.clone(),
                 ck.clone(),
@@ -543,7 +588,7 @@ pub async fn run_engagement(
             if stopping {
                 match findings_rx.try_recv() {
                     Ok(f) => {
-                        spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &cand, &pfk, &ck, &inf)
+                        spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &variant_map_intake, &selfop_intake, &cand, &pfk, &ck, &inf)
                     }
                     Err(_) => break,
                 }
@@ -553,7 +598,7 @@ pub async fn run_engagement(
                 _ = &mut stop_rx => stopping = true,
                 maybe = findings_rx.recv() => {
                     match maybe {
-                        Some(f) => spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &cand, &pfk, &ck, &inf),
+                        Some(f) => spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &variant_map_intake, &selfop_intake, &cand, &pfk, &ck, &inf),
                         None => break,
                     }
                 }

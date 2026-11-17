@@ -369,6 +369,7 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
         packs_dir: std::path::PathBuf::from("packs"),
         policy: None,
         bounty_sidecar: false,
+        selfop: Arc::new(Mutex::new(aegis_knowledge::selfop::SelfOp::default())),
     };
 
     let result = run_engagement(&mut ctx, provider_for).await.unwrap();

@@ -73,6 +73,17 @@ enum Cmd {
         resume: bool,
     },
     /// Interactive copilot mode: you drive, the harness executes + validates.
+    /// Decide a pending HITL action (approve by default, --deny to refuse).
+    Gate {
+        /// Approvals dir (engagements/<id>/approvals).
+        #[arg(long)]
+        dir: PathBuf,
+        /// Pending id from the [hitl] PENDING line.
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        deny: bool,
+    },
     Copilot {
         #[arg(long)]
         scope: PathBuf,
@@ -156,6 +167,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Init { target, out } => init_wizard::run(target, out).await?,
+        Cmd::Gate { dir, id, deny } => {
+            let decision = if deny { "deny" } else { "approve" };
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(format!("{id}.decision")), decision)?;
+            println!("{decision}: {id}");
+        }
         Cmd::Run {
             scope,
             mode,

@@ -9,3 +9,5 @@ pub mod patterns;
 
 pub use packs::KnowledgePack;
 pub use patterns::PatternLibrary;
+
+pub mod selfop;
