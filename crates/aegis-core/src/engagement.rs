@@ -304,6 +304,17 @@ pub async fn run_engagement(
             critic: Option<Arc<dyn LlmProvider>>,
             patterns: Arc<Mutex<PatternLibrary>>,
         ) {
+            // Reachability prefilter (taint-lite): a candidate with no
+            // request path can never be reproduced — kill before burning
+            // critic+validator budget on it.
+            let has_sink = !f.evidence["url"].as_str().unwrap_or("").is_empty()
+                || !f.evidence["request"]["url"].as_str().unwrap_or("").is_empty();
+            if !has_sink {
+                *rej.lock().unwrap() += 1;
+                rejl.lock().unwrap()
+                    .push((f.title.clone(), "unreachable: evidence has no request url".into()));
+                return;
+            }
             // Critic gate (LLM, advisory): slop filter before determinism.
             if let Some(c) = &critic {
                 use aegis_gateway::Message;
@@ -330,9 +341,37 @@ pub async fn run_engagement(
             }
             match validators.get(&f.class) {
                 Some(v) => {
-                    let verdict = v.validate(&f).await;
+                    let mut verdict = v.validate(&f).await;
+                    // One bounded in-place retry for transient verdicts.
+                    if matches!(verdict, Verdict::NeedsRetry { .. }) {
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        verdict = v.validate(&f).await;
+                    }
                     match &verdict {
+                        Verdict::NeedsRetry { reason } => {
+                            *rej.lock().unwrap() += 1;
+                            rejl.lock().unwrap()
+                                .push((f.title.clone(), format!("unstable: {reason}")));
+                        }
+                        Verdict::Informational { note } => {
+                            rejl.lock().unwrap()
+                                .push((f.title.clone(), format!("informational: {note}")));
+                        }
                         Verdict::Verified { reproduction } => {
+                            // Second-verifier pass for high/critical: one
+                            // independent re-validate before it enters the report.
+                            if matches!(f.severity, aegis_validate::Severity::High | aegis_validate::Severity::Critical) {
+                                let again = v.validate(&f).await;
+                                if !matches!(again, Verdict::Verified { .. }) {
+                                    info!(title=%f.title,"second verifier disagreed — rejected");
+                                    *rej.lock().unwrap() += 1;
+                                    rejl.lock().unwrap().push((
+                                        f.title.clone(),
+                                        "failed second-verifier pass".into(),
+                                    ));
+                                    return;
+                                }
+                            }
                             info!(title=%f.title,"finding VERIFIED");
                             let url = f.evidence["url"]
                                 .as_str()

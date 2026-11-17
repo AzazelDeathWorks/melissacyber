@@ -9,4 +9,8 @@ pub enum Verdict {
     Rejected { reason: String },
     /// Preview class — reported as unverified.
     Preview { note: String },
+    /// Transient failure — worth one retry.
+    NeedsRetry { reason: String },
+    /// True observation but not exploitable — reported separately.
+    Informational { note: String },
 }

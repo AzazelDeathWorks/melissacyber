@@ -363,7 +363,16 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     validators.register(Arc::new(CorsValidator { probe: probe.clone() }));
     validators.register(Arc::new(JwtValidator { probe: probe.clone() }));
     validators.register(Arc::new(XxeValidator { probe: probe.clone() }));
-    validators.register(Arc::new(InfoDisclosureValidator { probe }));
+    validators.register(Arc::new(InfoDisclosureValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::OpenRedirectValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::HostHeaderValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::SecretsValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::CsrfValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::IdorValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::FileUploadValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::DeserValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::RaceValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe }));
 
     // --- providers ---
     let target_url = scope
@@ -624,7 +633,16 @@ pub async fn serve(port: u16, _mcp: bool, bind: &str, token: Option<String>) -> 
     validators.register(Arc::new(CorsValidator { probe: probe.clone() }));
     validators.register(Arc::new(JwtValidator { probe: probe.clone() }));
     validators.register(Arc::new(XxeValidator { probe: probe.clone() }));
-    validators.register(Arc::new(InfoDisclosureValidator { probe }));
+    validators.register(Arc::new(InfoDisclosureValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::OpenRedirectValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::HostHeaderValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::SecretsValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::CsrfValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::IdorValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::FileUploadValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::DeserValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::RaceValidator { probe: probe.clone() }));
+    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe }));
     let state = Arc::new(aegis_mcp::McpState {
         allow,
         validators: Arc::new(validators),
@@ -961,6 +979,12 @@ fn cvss_estimate(class: &aegis_validate::FindingClass, severity: aegis_validate:
         C::Race => 6.8,
         C::Crypto => 5.9,
         C::Crash => 7.3,
+        C::OpenRedirect => 6.1,
+        C::HostHeader => 6.4,
+        C::Secrets => 7.4,
+        C::Csrf => 6.5,
+        C::FileUpload => 8.1,
+        C::BusinessLogic => 6.5,
         C::Ssti => 9.0,
         C::FilePath => 7.5,
         C::Xss => 6.1,

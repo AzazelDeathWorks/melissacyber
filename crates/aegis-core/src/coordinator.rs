@@ -91,6 +91,15 @@ impl Coordinator {
             FindingClass::CmdInjection => "cmd_injection",
             FindingClass::Ssti => "ssti",
             FindingClass::FilePath => "file_path",
+            FindingClass::OpenRedirect => "open_redirect",
+            FindingClass::HostHeader => "host_header",
+            FindingClass::Secrets => "secrets",
+            FindingClass::Csrf => "csrf",
+            FindingClass::AuthzIdor => "idor",
+            FindingClass::FileUpload => "file_upload",
+            FindingClass::Deserialization => "deserialization",
+            FindingClass::Race => "race",
+            FindingClass::BusinessLogic => "business_logic",
             _ => "",
         }
     }

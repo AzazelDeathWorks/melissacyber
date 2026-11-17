@@ -22,6 +22,12 @@ pub enum FindingClass {
     Crypto,
     Crash,
     InfoDisclosure,
+    OpenRedirect,
+    HostHeader,
+    Secrets,
+    Csrf,
+    FileUpload,
+    BusinessLogic,
     Other,
 }
 

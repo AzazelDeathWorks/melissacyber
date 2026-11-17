@@ -8,6 +8,7 @@
 pub mod cmd;
 pub mod file_path;
 pub mod generic;
+pub mod web2;
 pub mod finding;
 pub mod probe;
 pub mod replay;
@@ -22,6 +23,7 @@ pub use finding::{Finding, FindingClass, Severity};
 pub use probe::{ProbeClient, ProbeResponse};
 pub use cmd::CmdInjectionValidator;
 pub use file_path::FilePathValidator;
+pub use web2::{BusinessLogicValidator, CsrfValidator, DeserValidator, FileUploadValidator, HostHeaderValidator, IdorValidator, OpenRedirectValidator, RaceValidator, SecretsValidator};
 pub use generic::{CorsValidator, InfoDisclosureValidator, JwtValidator, XxeValidator};
 pub use replay::ReplayValidator;
 pub use sqli::SqliValidator;

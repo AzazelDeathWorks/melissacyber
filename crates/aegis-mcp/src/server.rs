@@ -76,6 +76,8 @@ async fn call_tool(st: &McpState, name: &str, args: &Value) -> Value {
                     }
                     Verdict::Rejected { reason } => json!({"verdict":"rejected","reason":reason}),
                     Verdict::Preview { note } => json!({"verdict":"preview","note":note}),
+                    Verdict::NeedsRetry { reason } => json!({"verdict":"needs_retry","reason":reason}),
+                    Verdict::Informational { note } => json!({"verdict":"informational","note":note}),
                 },
                 None => json!({"verdict":"error","reason":"no validator for class"}),
             }
