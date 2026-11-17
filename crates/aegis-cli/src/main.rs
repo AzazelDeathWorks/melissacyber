@@ -67,6 +67,10 @@ enum Cmd {
         /// Wall-clock cap for the whole engagement, seconds (0 = none).
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
+        /// Resume: restore KG + dedup keys from the artifacts dir of an
+        /// earlier run and skip discovery.
+        #[arg(long)]
+        resume: bool,
     },
     /// Interactive copilot mode: you drive, the harness executes + validates.
     Copilot {
@@ -130,8 +134,11 @@ enum Cmd {
 #[derive(Subcommand)]
 enum PackCmd {
     List,
-    Install { name: String },
+    /// Install a pack from a git URL or local directory into packs/.
+    Install { source: String },
     New { name: String },
+    /// Remove an installed pack.
+    Remove { name: String },
     /// Import a MITRE Atomic Red Team YAML as a purple playbook.
     ImportAtomic { file: std::path::PathBuf },
 }
@@ -163,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
             samples,
             fuzz_cmd,
             timeout_secs,
+            resume,
         } => {
             run_pipeline::run(run_pipeline::RunArgs {
                 scope,
@@ -178,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
                 samples,
                 fuzz_cmd,
                 timeout_secs,
+                resume,
             })
             .await?
         }
@@ -202,8 +211,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Pack { sub } => match sub {
             PackCmd::List => run_pipeline::pack_list(),
-            PackCmd::Install { name } => println!("install pack {name}"),
-            PackCmd::New { name } => println!("scaffold pack {name}"),
+            PackCmd::Install { source } => run_pipeline::pack_install(&source),
+            PackCmd::New { name } => run_pipeline::pack_new(&name),
+            PackCmd::Remove { name } => run_pipeline::pack_remove(&name),
             PackCmd::ImportAtomic { file } => {
                 let doc = atomic::import_atomic_yaml(&std::fs::read_to_string(&file)?)?;
                 let out = file.with_extension("playbook.json");

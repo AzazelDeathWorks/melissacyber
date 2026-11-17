@@ -364,6 +364,9 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
         prices: Default::default(),
         traces_dir: std::env::temp_dir().join("aegis-e2e-traces"),
         sweeps: false,
+        skip_discovery: false,
+        resume_keys: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        packs_dir: std::path::PathBuf::from("packs"),
     };
 
     let result = run_engagement(&mut ctx, provider_for).await.unwrap();

@@ -63,6 +63,12 @@ pub struct EngagementCtx {
     pub traces_dir: PathBuf,
     /// Param-less sweeps per endpoint (info disclosure, cors).
     pub sweeps: bool,
+    /// Skip the discovery wave (resume: KG restored from journal).
+    pub skip_discovery: bool,
+    /// Dedup keys from a previous partial run (resume).
+    pub resume_keys: Arc<Mutex<HashSet<(String, String, String)>>>,
+    /// packs/ dir for domain-pack hints injected into objectives.
+    pub packs_dir: std::path::PathBuf,
 }
 
 #[derive(Debug)]
@@ -112,7 +118,8 @@ pub async fn run_engagement(
     drop(sink2_tx);
 
     // --- Wave 1: discovery ---
-    info!("engagement: discovery wave");
+    if !ctx.skip_discovery {
+        info!("engagement: discovery wave");
     if let Some(p) = provider_for("discovery") {
         let outcome = run_agent(
             p,
@@ -142,6 +149,7 @@ pub async fn run_engagement(
                 .join("\n"),
         );
     }
+    } // !skip_discovery
 
     let tasks = Coordinator::endpoint_tasks(&ctx.kg.lock().unwrap());
     info!(endpoints = tasks.len(), "discovery produced endpoints");
@@ -168,7 +176,13 @@ pub async fn run_engagement(
         jobs.sort_by_key(|(_, _, c)| std::cmp::Reverse(lib.class_prior(&format!("{c:?}").to_lowercase())));
     }
 
-    let few_shot = ctx.patterns.lock().unwrap().few_shot(5);
+    let target_host = ctx
+        .scope
+        .targets
+        .iter()
+        .find_map(|t| reqwest::Url::parse(&t.value).ok().and_then(|u| u.host_str().map(String::from)))
+        .unwrap_or_default();
+    let few_shot = ctx.patterns.lock().unwrap().few_shot_for(&target_host, 5);
     let mut handles = vec![];
     let mut solver_runs = 0usize;
     // Param-less sweeps: info disclosure + CORS on every endpoint.
@@ -191,7 +205,8 @@ pub async fn run_engagement(
                 anyhow::bail!("no provider for role 'solver'");
             };
             solver_runs += 1;
-            let mut objective = Coordinator::solver_objective(task, param, class);
+            let mut objective = Coordinator::solver_objective(task, param, class)
+                + &Coordinator::pack_hint(&ctx.packs_dir, class);
             if ctx.samples > 1 {
                 objective.push_str(&format!(
                     "\nSampling variant {}/{}: try {}.",
@@ -236,7 +251,8 @@ pub async fn run_engagement(
             anyhow::bail!("no provider for role 'solver'");
         };
         solver_runs += 1;
-        let objective = Coordinator::sweep_objective(url, class);
+        let objective = Coordinator::sweep_objective(url, class)
+            + &Coordinator::pack_hint(&ctx.packs_dir, class);
         let reg = ctx.registry.clone();
         let sys = prompts::solver_system(&ctx.scope);
         let spend = ctx.spend.clone();
@@ -313,15 +329,17 @@ pub async fn run_engagement(
                     match &verdict {
                         Verdict::Verified { reproduction } => {
                             info!(title=%f.title,"finding VERIFIED");
-                            let url = f.evidence["url"].as_str().unwrap_or("");
-                            let path = url.split('?').next().unwrap_or(url);
-                            let hostless = reqwest::Url::parse(path)
-                                .map(|u| u.path().to_string())
-                                .unwrap_or_else(|_| path.to_string());
+                            let url = f.evidence["url"]
+                                .as_str()
+                                .or_else(|| f.evidence["request"]["url"].as_str())
+                                .unwrap_or("");
+                            let parsed = reqwest::Url::parse(url.split('?').next().unwrap_or(url)).ok();
+                            let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("").to_string();
+                            let path = parsed.as_ref().map(|u| u.path().to_string()).unwrap_or_else(|| url.to_string());
                             let param = f.evidence["param"].as_str().unwrap_or("");
                             patterns.lock().unwrap().record(
                                 &format!("{:?}", f.class).to_lowercase(),
-                                &format!("GET {}?{}=", hostless, param),
+                                &format!("{}{}?{}=", host, path, param),
                                 reproduction,
                             );
                         }
@@ -399,9 +417,11 @@ pub async fn run_engagement(
 
     let verified_so_far = Arc::new(Mutex::new(Vec::<(Finding, Verdict)>::new()));
     let vsf = verified_so_far.clone();
+    let ctx_resume_keys = ctx.resume_keys.clone();
     let collect = tokio::spawn(async move {
         let mut verified: Vec<(Finding, Verdict)> = vec![];
-        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        let mut seen: HashSet<(String, String, String)> =
+            ctx_resume_keys.lock().unwrap().clone();
         while let Some(fv) = rx_verified.recv().await {
             if matches!(fv.1, Verdict::Verified { .. }) {
                 vsf.lock().unwrap().push((fv.0.clone(), fv.1.clone()));
@@ -424,6 +444,7 @@ pub async fn run_engagement(
             }
             verified.push(fv);
         }
+        ctx_resume_keys.lock().unwrap().extend(seen);
         verified
     });
 

@@ -25,8 +25,69 @@ impl Allowlist {
         }
     }
 
+    /// Canonicalize host strings so literal tricks don't bypass rules:
+    /// "127.1", "0x7f.0.0.1", "2130706433", "0177.0.0.1", "[::1]", "::1",
+    /// trailing-dot FQDNs, percent-encoded hosts.
+    pub fn normalize(host: &str) -> String {
+        let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        let h = h.trim_start_matches('[').trim_end_matches(']').to_string();
+        // ::1 and friends -> 127.0.0.1
+        if h == "::1" || h == "0:0:0:0:0:0:0:1" {
+            return "127.0.0.1".into();
+        }
+        // IPv4 in weird notations: dotless int, hex/octal per-octet, short forms.
+        let mut octets: Vec<u64> = vec![];
+        let mut ok = true;
+        for part in h.split('.') {
+            let v = if let Some(x) = part.strip_prefix("0x") {
+                u64::from_str_radix(x, 16).ok()
+            } else if part.len() > 1 && part.starts_with('0') {
+                u64::from_str_radix(part, 8).ok()
+            } else {
+                part.parse::<u64>().ok()
+            };
+            match v {
+                Some(v) => octets.push(v),
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        // All octets but the last must be <= 0xff; the last group carries
+        // the remaining bytes: n=1->32 bits, 2->24 bits, 3->16 bits, 4->8 bits.
+        let n = octets.len();
+        let in_range = (1..=4).contains(&n);
+        let last_max: u64 = if in_range {
+            [0, 0xffFFffFF, 0xffFFff, 0xffFF, 0xff][n]
+        } else {
+            0
+        };
+        let head_ok = in_range && octets[..n - 1].iter().all(|o| *o <= 0xff);
+        if ok && in_range && head_ok && octets[n - 1] <= last_max {
+            let addr: u64 = match n {
+                // 127.1 == 127.0.0.1 ; 127.0.1 == 127.0.0.1
+                1 => octets[0],
+                2 => (octets[0] << 24) | octets[1],
+                3 => (octets[0] << 24) | (octets[1] << 16) | octets[2],
+                4 => (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3],
+                _ => unreachable!(),
+            };
+            if addr <= u32::MAX as u64 {
+                return format!(
+                    "{}.{}.{}.{}",
+                    (addr >> 24) & 0xff,
+                    (addr >> 16) & 0xff,
+                    (addr >> 8) & 0xff,
+                    addr & 0xff
+                );
+            }
+        }
+        h
+    }
+
     pub fn allows(&self, host: &str) -> bool {
-        let h = host.to_ascii_lowercase();
+        let h = Self::normalize(host);
         if self.hosts.contains(&h) {
             return true;
         }

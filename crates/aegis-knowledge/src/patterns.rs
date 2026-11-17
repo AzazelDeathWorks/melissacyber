@@ -78,8 +78,15 @@ impl PatternLibrary {
     }
 
     /// Top-N patterns rendered as few-shot hints for solver prompts.
-    pub fn few_shot(&self, n: usize) -> String {
-        let mut ps = self.patterns.clone();
+    /// `host` filters to patterns learned on the same host — a finding on
+    /// target A must not leak into the prompt for unrelated target B.
+    pub fn few_shot_for(&self, host: &str, n: usize) -> String {
+        let mut ps: Vec<_> = self
+            .patterns
+            .iter()
+            .filter(|p| p.context_signature.contains(host))
+            .cloned()
+            .collect();
         ps.sort_by(|a, b| b.times_verified.cmp(&a.times_verified));
         ps.iter()
             .take(n)

@@ -851,3 +851,138 @@ impl Tool for FileWriteTool {
             .map_err(|e| ToolError::Sandbox(e.to_string()))
     }
 }
+
+// ---------- browser (real headless chrome, scope-checked) ----------
+
+pub struct BrowserTool {
+    pub backend: Arc<dyn SandboxBackend>,
+    pub handle: SandboxHandle,
+    pub allow: Allowlist,
+    pub chrome_path: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for BrowserTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "browser",
+            "Render a page in headless Chrome — returns final DOM text after JS executes, plus extracted links/forms/inputs. Use for SPA/JS-rendered apps and DOM-XSS checks.",
+            json!({"type":"object","properties":{
+                "url":{"type":"string"},
+                "wait_ms":{"type":"integer","default":3000}
+            },"required":["url"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let url = arg_str(&args, "url")?;
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        let host = parsed.host_str().unwrap_or("");
+        if !self.allow.allows(host) {
+            return Err(ToolError::ScopeViolation(host.into()));
+        }
+        let wait = args["wait_ms"].as_u64().unwrap_or(3000);
+        // --dump-dom prints the post-JS DOM; virtual-time-budget gives the
+        // page time to settle. chrome runs inside the sandbox if the image
+        // has it, else the host chrome.
+        let cmd = format!(
+            "{chrome} --headless=new --disable-gpu --no-sandbox --dump-dom \
+             --virtual-time-budget={wait} '{url}' 2>/dev/null",
+            chrome = self.chrome_path,
+            wait = wait,
+            url = url.replace('\'', "'\\''"),
+        );
+        let dom = self
+            .backend
+            .exec(&self.handle, &[&cmd])
+            .await
+            .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+        let grab = |attr: &str| -> Vec<String> {
+            let mut v = vec![];
+            for m in dom.match_indices(&format!("{attr}=\"")) {
+                let rest = &dom[m.0 + attr.len() + 2..];
+                if let Some(end) = rest.find('"') {
+                    v.push(rest[..end].to_string());
+                }
+            }
+            v
+        };
+        let text: String = {
+            // crude tag-strip for readable text
+            let mut t = String::new();
+            let mut in_tag = false;
+            for c in dom.chars() {
+                match c {
+                    '<' => in_tag = true,
+                    '>' => in_tag = false,
+                    _ if !in_tag => t.push(c),
+                    _ => {}
+                }
+            }
+            t.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        out(json!({
+            "dom_len": dom.len(),
+            "text_preview": &text[..text.len().min(4000)],
+            "links": grab("href"),
+            "form_actions": grab("action"),
+            "scripts": grab("src"),
+            "dom_head": &dom[..dom.len().min(2000)],
+        }))
+    }
+}
+
+// ---------- tmux (true interactive sessions inside the sandbox) ----------
+
+pub struct TmuxTool {
+    pub backend: Arc<dyn SandboxBackend>,
+    pub handle: SandboxHandle,
+}
+
+#[async_trait::async_trait]
+impl Tool for TmuxTool {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "tmux",
+            "Interactive terminal session (tmux) in the sandbox: run REPLs like msfconsole/sqlmap/python that need real interaction. action=new_session|send|capture|kill.",
+            json!({"type":"object","properties":{
+                "action":{"type":"string","enum":["new_session","send","capture","kill"]},
+                "session":{"type":"string"},
+                "keys":{"type":"string","description":"text to type (send)"},
+                "lines":{"type":"integer","default":200}
+            },"required":["action","session"]}),
+            &["*"],
+        )
+    }
+    async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let action = arg_str(&args, "action")?;
+        let sess = arg_str(&args, "session")?;
+        let esc = |s: &str| s.replace('\'', "'\\''");
+        let cmd = match action {
+            "new_session" => format!(
+                "tmux new-session -d -s '{sess}' && tmux capture-pane -t '{sess}' -p",
+                sess = esc(sess)
+            ),
+            "send" => {
+                let keys = esc(arg_str(&args, "keys")?);
+                format!(
+                    "tmux send-keys -t '{sess}' '{keys}' Enter && sleep 0.4 && tmux capture-pane -t '{sess}' -p",
+                    sess = esc(sess)
+                )
+            }
+            "capture" => format!(
+                "tmux capture-pane -t '{sess}' -p -S -{lines}",
+                sess = esc(sess),
+                lines = args["lines"].as_u64().unwrap_or(200)
+            ),
+            "kill" => format!("tmux kill-session -t '{sess}'", sess = esc(sess)),
+            a => return Err(ToolError::Sandbox(format!("bad action {a}"))),
+        };
+        self.backend
+            .exec(&self.handle, &[&cmd])
+            .await
+            .map(|o| out(json!({"output": o})).unwrap())
+            .map_err(|e| ToolError::Sandbox(e.to_string()))
+    }
+}

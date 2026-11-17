@@ -33,6 +33,7 @@ pub struct RunArgs {
     pub samples: usize,
     pub fuzz_cmd: Option<String>,
     pub timeout_secs: u64,
+    pub resume: bool,
 }
 
 fn mock_provider_for(target_url: String) -> ProviderFor {
@@ -414,6 +415,9 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         prices,
         traces_dir: artifacts_dir.join("traces"),
         sweeps: true,
+        skip_discovery: args.resume,
+        resume_keys: Arc::new(std::sync::Mutex::new(load_resume_keys(&artifacts_dir))),
+        packs_dir: std::path::PathBuf::from("packs"),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -837,4 +841,121 @@ pub fn pack_list() {
     }
     if found.is_empty() { println!("no packs installed (see ./packs)"); }
     for f in found { println!("pack: {f}"); }
+}
+
+
+fn which_chrome() -> anyhow::Result<String> {
+    for c in ["google-chrome", "chromium", "chromium-browser", "chrome"] {
+        if std::process::Command::new("sh")
+            .args(["-c", &format!("command -v {c}")])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(c.to_string());
+        }
+    }
+    anyhow::bail!("no chrome binary found")
+}
+
+/// Install a pack from a git URL or a local directory into packs/.
+pub fn pack_install(source: &str) {
+    let packs = std::path::Path::new("packs");
+    std::fs::create_dir_all(packs).ok();
+    let name = std::path::Path::new(source.trim_end_matches('/'))
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pack")
+        .to_string();
+    let dest = packs.join(&name);
+    if source.starts_with("http") || source.starts_with("git@") {
+        let st = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", source])
+            .arg(&dest)
+            .status();
+        match st {
+            Ok(s) if s.success() => println!("installed pack '{name}' from {source}"),
+            _ => eprintln!("pack install failed for {source}"),
+        }
+    } else {
+        let src = std::path::Path::new(source);
+        if src.is_dir() {
+            std::process::Command::new("cp")
+                .args(["-r", source])
+                .arg(&dest)
+                .status()
+                .ok();
+            println!("installed pack '{name}' from {source}");
+        } else {
+            eprintln!("pack install: not a dir or url: {source}");
+        }
+    }
+}
+
+/// Scaffold a new pack yaml.
+pub fn pack_new(name: &str) {
+    let packs = std::path::Path::new("packs");
+    std::fs::create_dir_all(packs).ok();
+    let f = packs.join(format!("{name}.yaml"));
+    std::fs::write(
+        &f,
+        format!("name: {name}\nversion: 0.1.0\nagents: []\nvalidators: []\n"),
+    )
+    .ok();
+    println!("scaffolded {}", f.display());
+}
+
+pub fn pack_remove(name: &str) {
+    let f = std::path::Path::new("packs").join(format!("{name}.yaml"));
+    let d = std::path::Path::new("packs").join(name);
+    let mut removed = false;
+    if f.exists() {
+        removed |= std::fs::remove_file(&f).is_ok();
+    }
+    if d.is_dir() {
+        removed |= std::fs::remove_dir_all(&d).is_ok();
+    }
+    println!("{}", if removed { format!("removed pack '{name}'") } else { format!("pack '{name}' not found") });
+}
+
+
+fn load_resume_keys(dir: &std::path::Path) -> std::collections::HashSet<(String, String, String)> {
+    std::fs::read_to_string(dir.join("verified_keys.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Rough CVSS 3.1 base-score estimate per class+severity — heuristic, not
+/// a real vector evaluation; labelled as an estimate in the report.
+fn cvss_estimate(class: &aegis_validate::FindingClass, severity: aegis_validate::Severity) -> f64 {
+    use aegis_validate::{FindingClass as C, Severity as S};
+    let base: f64 = match class {
+        C::CmdInjection => 9.8,
+        C::Sqli => 9.1,
+        C::Ssrf => 8.6,
+        C::Xxe => 8.2,
+        C::Authn | C::AuthzIdor => 8.8,
+        C::Nosqli => 8.9,
+        C::Smuggling => 7.9,
+        C::Deserialization => 9.0,
+        C::Race => 6.8,
+        C::Crypto => 5.9,
+        C::Crash => 7.3,
+        C::Ssti => 9.0,
+        C::FilePath => 7.5,
+        C::Xss => 6.1,
+        C::Cors => 6.5,
+        C::SessionJwt => 8.1,
+        C::InfoDisclosure => 5.3,
+        C::Other => 5.0,
+    };
+    match severity {
+        S::Critical => base,
+        S::High => base * 0.9,
+        S::Medium => base * 0.7,
+        S::Low => base * 0.4,
+        S::Info => base * 0.2,
+    }
+    .min(10.0f64)
 }
