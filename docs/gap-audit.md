@@ -156,3 +156,13 @@ Ayrıca: `kg_write` provenance hep `None`; `KgTool` sınırsız veri kabul ediyo
 ## 8. Özet cümle
 
 İskelet doğru: scope→discovery→solver→validator→rapor boru hattı çalışıyor ve validator fikri gerçekten slop'u kesiyor. Ama şu an bu bir **"GET-param web lab kanıtlayıcısı"**; XBOW paritesi için eksik olan tek şey polish değil — **POST yüzeyi, tarayıcı, auth, persistent shell, re-planning, coverage ve enforcement**. P0 listesini kapadıktan sonra rakiplerle aynı cümlede anılmaya başlarız; P1 bitince geçeriz.
+
+---
+
+## Implementation status (commit 7a2c9b1)
+
+P0 — all fixed: report repro/rejected section, redirect scope bypass, retry/backoff, rate limiter, POST/form/json/header/path injection via send_value, cmd-validator reflected-canary FP, wall-clock timeout, solver error accounting, non-local host-fallback refusal, MCP Content-Length+auth+bind.
+
+P1 — shipped: re-planning escalation wave, param-less sweeps (InfoDisclosure+Cors), parallel intake, dedup, traces/, journal.jsonl, auth_login+session store, persistent shell, portscan/dns_lookup/web_inspect/file ops, OOB full capture + DNS listener, JWT/CORS/XXE/InfoDisclosure validators, sqli Dice+multi-sample timing, prices->real USD spend, untrusted-output wrapping, real worker, LLM arena attacker, SARIF, CI (cargo test + lab engagement).
+
+P2 — deferred honestly: real headless browser (web_inspect is the lightweight stand-in), tmux/msfconsole interactive sessions (shell covers cwd/env only), resume-from-journal, knowledge-pack content injection into solver prompts, IP-literal normalization, CVSS scoring, marketplace.
