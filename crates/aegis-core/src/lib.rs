@@ -14,6 +14,7 @@ pub mod fuzz;
 pub mod pag;
 pub mod prompts;
 pub mod runner;
+pub mod search;
 pub mod spec_loader;
 
 pub use arena::{apply, append_trace, judge, rule_matches, ArenaScore, ArenaTrace};

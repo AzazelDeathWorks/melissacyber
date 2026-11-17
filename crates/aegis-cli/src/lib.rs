@@ -9,6 +9,8 @@ pub enum ModeArg {
     Red,
     Blue,
     Purple,
+    /// Systematic swarm + free bounty-hunter agent.
+    Bounty,
 }
 
 #[derive(Clone, Debug, ValueEnum)]

@@ -201,6 +201,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         (ModeArg::Red, _) => Mode::Red,
         (ModeArg::Blue, _) => Mode::Blue,
         (ModeArg::Purple, _) => Mode::Purple,
+        (ModeArg::Bounty, _) => Mode::Bounty,
     };
 
     let engagement_id = uuid::Uuid::new_v4();
@@ -445,6 +446,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         resume_keys: Arc::new(std::sync::Mutex::new(load_resume_keys(&artifacts_dir))),
         packs_dir: std::path::PathBuf::from("packs"),
         policy: Some(policy.clone()),
+        bounty_sidecar: matches!(mode, Mode::Bounty),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -566,12 +568,16 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     let s = spend.lock().unwrap();
     println!(
         "\n=== engagement {engagement_id} complete ===\n\
-         endpoints: {} | solver runs: {} | verified: {} | rejected: {}\n\
+         endpoints: {} | solver runs: {} | verified: {} | rejected: {} | funnel: c:{} k:{} pk:{} i:{}\n\
          tokens: {} in / {} out | ~${:.2}\nreport: {}",
         result.endpoints,
         result.solver_runs,
         result.verified.iter().filter(|(_, v)| matches!(v, aegis_validate::Verdict::Verified{..})).count(),
         result.rejected,
+        result.funnel.candidates,
+        result.funnel.critic_killed,
+        result.funnel.prefilter_killed,
+        result.funnel.informational,
         s.input_tokens,
         s.output_tokens,
         s.usd,

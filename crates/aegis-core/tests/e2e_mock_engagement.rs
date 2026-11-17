@@ -368,6 +368,7 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
         resume_keys: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         packs_dir: std::path::PathBuf::from("packs"),
         policy: None,
+        bounty_sidecar: false,
     };
 
     let result = run_engagement(&mut ctx, provider_for).await.unwrap();

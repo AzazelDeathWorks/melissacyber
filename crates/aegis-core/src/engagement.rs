@@ -30,6 +30,9 @@ pub enum Mode {
     Blue,
     Purple,
     Deep,
+    /// Dual-mode (Astra/AWS): systematic swarm + one free-roam
+    /// bounty-hunter agent running unscripted alongside it.
+    Bounty,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +74,8 @@ pub struct EngagementCtx {
     pub packs_dir: std::path::PathBuf,
     /// Policy broker — every tool call is gated/audited when set.
     pub policy: Option<std::sync::Arc<aegis_tools::broker::PolicyBroker>>,
+    /// Bounty-hunter mode: one free agent alongside the swarm.
+    pub bounty_sidecar: bool,
 }
 
 #[derive(Debug)]
@@ -83,6 +88,22 @@ pub struct EngagementResult {
     pub endpoints: usize,
     pub solver_runs: usize,
     /// Solver tasks that errored (never silently dropped).
+    pub solver_errors: usize,
+    /// Per-stage funnel telemetry (RunSybil): where the pipeline gains
+    /// and loses findings.
+    pub funnel: FunnelStats,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct FunnelStats {
+    pub endpoints: usize,
+    pub solver_runs: usize,
+    pub candidates: usize,
+    pub critic_killed: usize,
+    pub prefilter_killed: usize,
+    pub verified: usize,
+    pub rejected: usize,
+    pub informational: usize,
     pub solver_errors: usize,
 }
 
@@ -198,11 +219,37 @@ pub async fn run_engagement(
         }
     }
 
+    // LATS-lite route search: routes are (endpoint,param,class,strategy);
+    // each round spawns the UCB-best unmasked routes, then learns from the
+    // verified set — failed routes get masked, verified routes expand via
+    // milestone follow-ups later.
+    let mut search = crate::search::RouteSearch::default();
+    for (task, param, class) in &jobs {
+        for sample in 0..ctx.samples.max(1) {
+            search.add_route(crate::search::Route {
+                url: task.url.clone(),
+                param: param.name.clone(),
+                class: format!("{class:?}").to_lowercase(),
+                strategy: sample,
+            });
+        }
+    }
+
     'outer: for (task, param, class) in &jobs {
         for sample in 0..ctx.samples.max(1) {
             if solver_runs >= ctx.budget.max_agents || ctx.budget.exhausted() {
                 warn!("budget/agent cap reached — frontier truncated");
                 break 'outer;
+            }
+            // Action masking: never re-walk a masked route.
+            let route_key = crate::search::Route {
+                url: task.url.clone(),
+                param: param.name.clone(),
+                class: format!("{class:?}").to_lowercase(),
+                strategy: sample,
+            };
+            if search.nodes.get(&route_key).is_some_and(|n| n.masked) {
+                continue;
             }
             let Some(provider) = provider_for("solver") else {
                 anyhow::bail!("no provider for role 'solver'");
@@ -229,6 +276,7 @@ pub async fn run_engagement(
             let price = ctx.prices.get("solver").copied();
             let tdir = ctx.traces_dir.clone();
             let policy = ctx.policy.clone();
+            let route_for_task = route_key.clone();
             handles.push(tokio::spawn(async move {
                 let _p = permit.acquire().await.unwrap();
                 let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price, policy.as_deref()).await;
@@ -243,10 +291,11 @@ pub async fn run_engagement(
                             .join("\n"),
                     );
                 }
-                r
+                (r, route_for_task)
             }));
         }
     }
+    let mut sweep_handles = vec![];
     for (url, class) in &sweep_jobs {
         if solver_runs >= ctx.budget.max_agents || ctx.budget.exhausted() {
             break;
@@ -265,7 +314,7 @@ pub async fn run_engagement(
         let price = ctx.prices.get("solver").copied();
         let tdir = ctx.traces_dir.clone();
         let policy = ctx.policy.clone();
-        handles.push(tokio::spawn(async move {
+        sweep_handles.push(tokio::spawn(async move {
             let _p = permit.acquire().await.unwrap();
             let r = run_agent(provider, &reg, "solver", sys, objective, turns, spend, price, policy.as_deref()).await;
             if let Ok(o) = &r {
@@ -284,6 +333,36 @@ pub async fn run_engagement(
     }
     info!(solver_runs, sweeps = sweep_jobs.len(), samples = ctx.samples, "solver wave spawned");
 
+    // Bounty-hunter sidecar (dual-mode): one unscripted free agent that
+    // hunts like a human researcher — intuition, chaining, no checklist.
+    if ctx.bounty_sidecar {
+        if let Some(provider) = provider_for("solver") {
+            solver_runs += 1;
+            let reg = ctx.registry.clone();
+            let sys = prompts::solver_system(&ctx.scope);
+            let spend = ctx.spend.clone();
+            let policy = ctx.policy.clone();
+            let tdir = ctx.traces_dir.clone();
+            let targets = ctx.scope.targets.iter().map(|t| t.value.clone()).collect::<Vec<_>>().join(", ");
+            handles.push(tokio::spawn(async move {
+                let r = run_agent(
+                    provider, &reg, "solver", sys,
+                    format!(
+                        "You are a bug bounty hunter on {targets}. No checklist — hunt freely: reconnaissance, auth analysis, logic flaws, chaining. Submit anything concrete via validator_submit."
+                    ),
+                    40, spend, None, policy.as_deref(),
+                ).await;
+                if let Ok(o) = &r {
+                    let _ = std::fs::write(
+                        tdir.join(format!("bounty-{}.jsonl", Uuid::new_v4())),
+                        o.transcript.iter().map(|m| serde_json::to_string(m).unwrap_or_default()).collect::<Vec<_>>().join("\n"),
+                    );
+                }
+                (r, crate::search::Route { url: String::new(), param: String::new(), class: "bounty".into(), strategy: 0 })
+            }));
+        }
+    }
+
     // --- Validator intake (runs until shutdown signal) ---
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
     let (tx_verified, mut rx_verified) = mpsc::channel::<(Finding, Verdict)>(256);
@@ -294,6 +373,14 @@ pub async fn run_engagement(
     let rejected_list = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let rej = rejected.clone();
     let rejl = rejected_list.clone();
+    let cand = Arc::new(Mutex::new(0usize));
+    let pfk = Arc::new(Mutex::new(0usize));
+    let ck = Arc::new(Mutex::new(0usize));
+    let inf = Arc::new(Mutex::new(0usize));
+    let cand_out = cand.clone();
+    let pfk_out = pfk.clone();
+    let ck_out = ck.clone();
+    let inf_out = inf.clone();
     let intake = tokio::spawn(async move {
         async fn handle(
             f: Finding,
@@ -303,7 +390,12 @@ pub async fn run_engagement(
             tx: mpsc::Sender<(Finding, Verdict)>,
             critic: Option<Arc<dyn LlmProvider>>,
             patterns: Arc<Mutex<PatternLibrary>>,
+            cand: Arc<Mutex<usize>>,
+            pfk: Arc<Mutex<usize>>,
+            ck: Arc<Mutex<usize>>,
+            inf: Arc<Mutex<usize>>,
         ) {
+            *cand.lock().unwrap() += 1;
             // Reachability prefilter (taint-lite): a candidate with no
             // request path can never be reproduced — kill before burning
             // critic+validator budget on it.
@@ -311,6 +403,7 @@ pub async fn run_engagement(
                 || !f.evidence["request"]["url"].as_str().unwrap_or("").is_empty();
             if !has_sink {
                 *rej.lock().unwrap() += 1;
+                *pfk.lock().unwrap() += 1;
                 rejl.lock().unwrap()
                     .push((f.title.clone(), "unreachable: evidence has no request url".into()));
                 return;
@@ -334,6 +427,7 @@ pub async fn run_engagement(
                 if verdict_txt.contains("reject") && !verdict_txt.contains("pass") {
                     info!(title = %f.title, "finding killed by critic");
                     *rej.lock().unwrap() += 1;
+                    *ck.lock().unwrap() += 1;
                     rejl.lock().unwrap()
                         .push((f.title.clone(), "killed by critic".into()));
                     return;
@@ -354,6 +448,7 @@ pub async fn run_engagement(
                                 .push((f.title.clone(), format!("unstable: {reason}")));
                         }
                         Verdict::Informational { note } => {
+                            *inf.lock().unwrap() += 1;
                             rejl.lock().unwrap()
                                 .push((f.title.clone(), format!("informational: {note}")));
                         }
@@ -416,7 +511,11 @@ pub async fn run_engagement(
                            rejl: &Arc<Mutex<Vec<(String, String)>>>,
                            tx: &mpsc::Sender<(Finding, Verdict)>,
                            critic: &Option<Arc<dyn LlmProvider>>,
-                           patterns: &Arc<Mutex<PatternLibrary>>| {
+                           patterns: &Arc<Mutex<PatternLibrary>>,
+                           cand: &Arc<Mutex<usize>>,
+                           pfk: &Arc<Mutex<usize>>,
+                           ck: &Arc<Mutex<usize>>,
+                           inf: &Arc<Mutex<usize>>| {
             while set.len() >= 8 {
                 // can't await inside closure — caller drains
                 break;
@@ -429,6 +528,10 @@ pub async fn run_engagement(
                 tx.clone(),
                 critic.clone(),
                 patterns.clone(),
+                cand.clone(),
+                pfk.clone(),
+                ck.clone(),
+                inf.clone(),
             ));
         };
         let mut stopping = false;
@@ -440,7 +543,7 @@ pub async fn run_engagement(
             if stopping {
                 match findings_rx.try_recv() {
                     Ok(f) => {
-                        spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns)
+                        spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &cand, &pfk, &ck, &inf)
                     }
                     Err(_) => break,
                 }
@@ -450,7 +553,7 @@ pub async fn run_engagement(
                 _ = &mut stop_rx => stopping = true,
                 maybe = findings_rx.recv() => {
                     match maybe {
-                        Some(f) => spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns),
+                        Some(f) => spawn_h(f, &mut set, &validators, &rej, &rejl, &tx_verified, &critic, &patterns, &cand, &pfk, &ck, &inf),
                         None => break,
                     }
                 }
@@ -493,11 +596,13 @@ pub async fn run_engagement(
     });
 
     let mut solver_errors = 0usize;
+    let mut spawned_routes: Vec<crate::search::Route> = vec![];
     for h in handles {
         match h.await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
+            Ok((Ok(_), route)) => spawned_routes.push(route),
+            Ok((Err(e), route)) => {
                 solver_errors += 1;
+                spawned_routes.push(route);
                 warn!(err = %e, "solver failed");
             }
             Err(e) => {
@@ -505,6 +610,39 @@ pub async fn run_engagement(
                 warn!(err = %e, "solver task panicked/cancelled");
             }
         }
+    }
+    for h in sweep_handles {
+        if let Err(e) = h.await {
+            warn!(err = %e, "sweep task failed");
+        }
+    }
+
+    // LATS learn pass: mark each spawned route verified/failed against
+    // the validated set — masked routes were already skipped at spawn.
+    {
+        let verified_keys: std::collections::HashSet<(String, String)> = verified_so_far
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(f, _)| {
+                let u = f.evidence["url"].as_str().unwrap_or("").split('?').next().unwrap_or("").to_string();
+                (format!("{:?}", f.class).to_lowercase(), u)
+            })
+            .collect();
+        for r in &spawned_routes {
+            let path = reqwest::Url::parse(&r.url)
+                .map(|u| u.path().to_string())
+                .unwrap_or_else(|_| r.url.clone());
+            let hits = verified_keys.iter().any(|(c, u)| {
+                *c == r.class && (u.ends_with(&path) || r.url.ends_with(u))
+            });
+            if hits {
+                search.verify(r);
+            } else {
+                search.fail(r);
+            }
+        }
+        search.tick();
     }
 
     // Deferred spawn requests (agents queuing sub-agents mid-run).
@@ -547,20 +685,19 @@ pub async fn run_engagement(
     // Intake is still live; new solver findings will be validated.
     let mut escalation_runs = 0usize;
     {
+        // Milestone decomposition (DoGNAVY): each verified finding expands
+        // into stage-labelled follow-ups — primitive -> capability -> impact.
         let verified_snapshot = verified_so_far.lock().unwrap().clone();
         for (f, _) in &verified_snapshot {
-            let hint = match f.class {
-                FindingClass::FilePath => "read app config/env files for credentials, then try them on login endpoints",
-                FindingClass::Ssti | FindingClass::CmdInjection => "escalate to full RCE: enumerate the host, read secrets, attempt OOB exfil of a canary",
-                FindingClass::Sqli => "extract schema/credentials and try them on discovered auth endpoints",
-                _ => continue,
-            };
-            follow_ups.push(format!(
-                "Prior verified finding: {:?} at {} — {}. Submit any new issue via validator_submit.",
-                f.class,
-                f.evidence["url"].as_str().unwrap_or("?"),
-                hint
-            ));
+            let url = f.evidence["url"].as_str().unwrap_or("?");
+            let param = f.evidence["param"].as_str().unwrap_or("");
+            for (stage, obj) in crate::search::milestone_followups(
+                &format!("{:?}", f.class).to_lowercase(), url, param,
+            ) {
+                follow_ups.push(format!(
+                    "[milestone:{stage}] {obj} Submit via validator_submit."
+                ));
+            }
         }
     }
     for objective in follow_ups.iter().take(4) {
@@ -596,6 +733,17 @@ pub async fn run_engagement(
     let rejected_list_out: Vec<(String, String)> =
         rejected_list.lock().unwrap().iter().cloned().collect();
 
+    let funnel = FunnelStats {
+        endpoints: tasks.len(),
+        solver_runs,
+        candidates: *cand_out.lock().unwrap(),
+        critic_killed: *ck_out.lock().unwrap(),
+        prefilter_killed: *pfk_out.lock().unwrap(),
+        verified: verified.len(),
+        rejected,
+        informational: *inf_out.lock().unwrap(),
+        solver_errors,
+    };
     Ok(EngagementResult {
         verified,
         rejected_list: rejected_list_out,
@@ -603,5 +751,6 @@ pub async fn run_engagement(
         endpoints: tasks.len(),
         solver_runs,
         solver_errors,
+        funnel,
     })
 }
