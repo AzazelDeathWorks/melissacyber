@@ -1,5 +1,24 @@
 # role -> model spec. All roles on Experiential gateway qwen4-max.
-coordinator: custom|https://api.experientiallabs.ai/v1/qwen4-max
-solver: custom|https://api.experientiallabs.ai/v1/qwen4-max
-discovery: custom|https://api.experientiallabs.ai/v1/qwen4-max
-critic: custom|https://api.experientiallabs.ai/v1/qwen4-max
+# cost_in/cost_out = USD per 1M input/output tokens (used for spend
+# tracking + --budget enforcement). Adjust to your provider's pricing —
+# values below are the published qwen-max list prices, not XPL's.
+default:
+  model: custom|https://api.experientiallabs.ai/v1/qwen4-max
+  cost_in: 1.6
+  cost_out: 6.4
+coordinator:
+  model: custom|https://api.experientiallabs.ai/v1/qwen4-max
+  cost_in: 1.6
+  cost_out: 6.4
+solver:
+  model: custom|https://api.experientiallabs.ai/v1/qwen4-max
+  cost_in: 1.6
+  cost_out: 6.4
+discovery:
+  model: custom|https://api.experientiallabs.ai/v1/qwen4-max
+  cost_in: 1.6
+  cost_out: 6.4
+critic:
+  model: custom|https://api.experientiallabs.ai/v1/qwen4-max
+  cost_in: 1.6
+  cost_out: 6.4
