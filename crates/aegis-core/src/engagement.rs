@@ -296,6 +296,14 @@ pub async fn run_engagement(
             }
         }
     }
+    // Dedup (url,param,class): discovery can record the same endpoint
+    // twice with different param sets — don't spawn identical solvers.
+    {
+        let mut seen: HashSet<(String, String, String)> = HashSet::new();
+        jobs.retain(|(t, p, c)| {
+            seen.insert((t.url.clone(), p.name.clone(), format!("{c:?}").to_lowercase()))
+        });
+    }
     {
         let lib = ctx.patterns.lock().unwrap();
         jobs.sort_by_key(|(_, _, c)| std::cmp::Reverse(lib.class_prior(&format!("{c:?}").to_lowercase())));
