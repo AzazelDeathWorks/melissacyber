@@ -82,4 +82,4 @@ class H(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT","8898"))
     print(f"hard lab on :{port}")
-    http.server.HTTPServer(("127.0.0.1",port),H).serve_forever()
+    http.server.ThreadingHTTPServer(("127.0.0.1",port),H).serve_forever()
