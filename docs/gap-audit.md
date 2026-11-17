@@ -173,4 +173,7 @@ P2 — shipped (commit 275e9e6): real headless Chrome `browser` tool (post-JS DO
 - Reachability prefilter + second verifier + NeedsRetry/Informational: shipped
 - LATS route search (UCB, masking, pivot, decay) + milestones + bounty dual-mode + funnel: shipped
 - Exploit-craft (gdb_debug, payload_mutator), meta-tooling (define_tool), reflections, CWE/PDF, runsc/kata tiers: shipped
-- Remaining known limits: pgvector recall (jsonl KG), SelfOp prompt mutation, real HITL UI gate (env-driven), browser steering
+- Semantic recall (TF-IDF cosine over verified patterns, pgvector-swap-ready): shipped (G5)
+- SelfOp prompt bandit (UCB1 + evolved variants, ~/.aegis/selfop.json): shipped (G5)
+- Real HITL gate (pending-file protocol + `aegis gate` decide cmd): shipped (G5)
+- Remaining known limits: pgvector backend (interface swap), browser steering
