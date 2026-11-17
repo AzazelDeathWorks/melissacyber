@@ -4,7 +4,7 @@ use crate::registry::ToolRegistry;
 use crate::spec::{Tool, ToolError, ToolOutput, ToolSpec};
 use aegis_evidence::ArtifactStore;
 use aegis_kg::{KnowledgeGraph, Node, NodeKind};
-use aegis_sandbox::{Allowlist, RateLimiter, SandboxBackend, SandboxHandle};
+use aegis_sandbox::{Allowlist, RateLimiter, SandboxBackend, SandboxHandle, SessionStore};
 use aegis_validate::{Finding, FindingClass, Severity};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -60,13 +60,8 @@ impl Tool for TerminalTool {
 
 // ---------- http_client (app-layer scope check + proxied reqwest) ----------
 
-/// Cookies captured by auth_login, keyed by host — injected into later
-/// http_client requests for the same host (session persistence).
-#[derive(Default)]
-pub struct SessionStore {
-    pub cookies: HashMap<String, String>,
-}
-
+/// `SessionStore` lives in aegis-sandbox — shared with the validator
+/// probe so post-auth findings replay with the same session.
 pub struct HttpTool {
     /// Build with redirect::Policy::none() — we follow manually so every
     /// hop is re-checked against the egress allowlist (scope fix).
@@ -523,7 +518,9 @@ impl Tool for AuthLoginTool {
             json!({"type":"object","properties":{
                 "url":{"type":"string"},
                 "fields":{"type":"object","description":"form fields e.g. {username,password}"},
-                "headers":{"type":"object"}
+                "headers":{"type":"object"},
+                "csrf_field":{"type":"string","description":"hidden input name carrying a CSRF token — the tool GETs the page first, extracts the token and session cookies, then POSTs"},
+                "extra":{"type":"object","description":"static extra fields merged into the POST (e.g. {Login:'Login'})"}
             },"required":["url","fields"]}),
             &["*"],
         )
@@ -537,11 +534,47 @@ impl Tool for AuthLoginTool {
             return Err(ToolError::ScopeViolation(host));
         }
         let fields = args["fields"].as_object().cloned().unwrap_or_default();
-        let form: Vec<(String, String)> = fields
+        let mut form: Vec<(String, String)> = fields
             .iter()
             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
             .collect();
+        if let Some(extra) = args["extra"].as_object() {
+            for (k, v) in extra {
+                form.push((k.clone(), v.as_str().unwrap_or("").to_string()));
+            }
+        }
+        // Multi-step auth: GET the page first when a CSRF token field is
+        // named — capture the session cookie AND the token, then POST.
+        let mut prior_cookies: Vec<String> = vec![];
+        if let Some(cf) = args["csrf_field"].as_str() {
+            let get_resp = self
+                .client
+                .get(parsed.clone())
+                .send()
+                .await
+                .map_err(|e| ToolError::Sandbox(e.to_string()))?;
+            for v in get_resp.headers().get_all("set-cookie") {
+                if let Ok(s) = v.to_str() {
+                    if let Some(pair) = s.split(';').next() {
+                        prior_cookies.push(pair.to_string());
+                    }
+                }
+            }
+            let page = get_resp.text().await.unwrap_or_default();
+            let token = extract_input_value(&page, cf);
+            if let Some(t) = token {
+                form.push((cf.to_string(), t));
+            } else {
+                return Ok(ToolOutput {
+                    ok: false,
+                    data: json!({"error": format!("csrf_field '{cf}' not found in login page")}),
+                });
+            }
+        }
         let mut req = self.client.post(parsed).form(&form);
+        if !prior_cookies.is_empty() {
+            req = req.header("cookie", prior_cookies.join("; "));
+        }
         if let Some(h) = args["headers"].as_object() {
             for (k, v) in h {
                 if let Some(vs) = v.as_str() {
@@ -560,7 +593,13 @@ impl Tool for AuthLoginTool {
         }
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        let stored = if cookies.is_empty() {
+        let stored = if !cookies.is_empty() {
+            Some(cookies.join("; "))
+        } else if !prior_cookies.is_empty() {
+            // The login POST re-used the pre-auth session (common with
+            // PHP session fixation) — keep the cookies we already hold.
+            Some(prior_cookies.join("; "))
+        } else {
             // Bearer token in JSON body?
             serde_json::from_str::<Value>(&body)
                 .ok()
@@ -568,8 +607,6 @@ impl Tool for AuthLoginTool {
                     v["token"].as_str().or_else(|| v["access_token"].as_str()).map(String::from)
                 })
                 .map(|t| format!("__bearer__={t}"))
-        } else {
-            Some(cookies.join("; "))
         };
         if let Some(c) = &stored {
             self.session.lock().unwrap().cookies.insert(host.clone(), c.clone());
@@ -581,6 +618,30 @@ impl Tool for AuthLoginTool {
             "body_preview": &body[..body.len().min(2000)],
         }))
     }
+}
+
+/// Pull `value="..."` out of the `<input ... name="FIELD" ...>` tag in
+/// an HTML page (either attribute order, single or double quotes).
+fn extract_input_value(page: &str, field: &str) -> Option<String> {
+    for tag in page.split('<').skip(1) {
+        let tag = tag.split('>').next().unwrap_or("");
+        if !(tag.trim_start().to_ascii_lowercase().starts_with("input")
+            && (tag.contains(&format!("name=\"{field}\""))
+                || tag.contains(&format!("name='{field}'"))))
+        {
+            continue;
+        }
+        for attr in ["value=\"", "value='"] {
+            if let Some(rest) = tag.split(attr).nth(1) {
+                let q = attr.chars().last().unwrap();
+                if let Some(end) = rest.find(q) {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+        return Some(String::new());
+    }
+    None
 }
 
 // ---------- shell (persistent session: cwd + env survive calls) ----------

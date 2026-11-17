@@ -2,9 +2,9 @@
 //! GET/POST/…, manual redirect following through the scope allowlist
 //! (a 302 off-target must NOT be followed silently).
 
-use aegis_sandbox::{Allowlist, RateLimiter};
+use aegis_sandbox::{Allowlist, RateLimiter, SessionStore};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ pub struct ProbeClient {
     client: reqwest::Client,
     pub allow: Allowlist,
     limiter: Option<Arc<RateLimiter>>,
+    session: Option<Arc<Mutex<SessionStore>>>,
 }
 
 impl ProbeClient {
@@ -36,6 +37,7 @@ impl ProbeClient {
             client: b.build()?,
             allow: Allowlist::new(&[]),
             limiter: None,
+            session: None,
         })
     }
 
@@ -46,6 +48,14 @@ impl ProbeClient {
 
     pub fn with_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
         self.limiter = Some(limiter);
+        self
+    }
+
+    /// Share the engagement session store: cookies captured by auth_login
+    /// are injected into replays for that host (post-auth validation)
+    /// unless the evidence already sets a Cookie header.
+    pub fn with_session(mut self, session: Arc<Mutex<SessionStore>>) -> Self {
+        self.session = Some(session);
         self
     }
 
@@ -102,6 +112,20 @@ impl ProbeClient {
             }
             for (k, v) in headers {
                 req = req.header(k.as_str(), v.as_str());
+            }
+            // Post-auth replay: inject stored session cookies when the
+            // evidence did not set its own Cookie header.
+            let has_cookie = headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("cookie"));
+            if !has_cookie {
+                if let Some(ck) = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.lock().unwrap().cookies.get(&host).cloned())
+                {
+                    req = req.header("cookie", ck);
+                }
             }
             if first {
                 if let Some(b) = &body {

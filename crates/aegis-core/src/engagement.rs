@@ -747,7 +747,20 @@ pub async fn run_engagement(
 
     let mut solver_errors = 0usize;
     let mut spawned_routes: Vec<crate::search::Route> = vec![];
+    // Diminishing-returns early stop: once EARLY_STOP_AFTER solvers in a
+    // row finish without producing a new verified finding, remaining
+    // runs are cancelled — they almost never pay off but keep burning
+    // tokens behind the concurrency semaphore.
+    const EARLY_STOP_AFTER: usize = 25;
+    let mut last_verified = 0usize;
+    let mut since_hit = 0usize;
+    let mut abort_rest = false;
     for h in handles {
+        if abort_rest {
+            h.abort();
+            let _ = h.await;
+            continue;
+        }
         match h.await {
             Ok((Ok(_), route)) => spawned_routes.push(route),
             Ok((Err(e), route)) => {
@@ -759,6 +772,17 @@ pub async fn run_engagement(
                 solver_errors += 1;
                 warn!(err = %e, "solver task panicked/cancelled");
             }
+        }
+        let v = verified_so_far.lock().unwrap().len();
+        if v > last_verified {
+            last_verified = v;
+            since_hit = 0;
+        } else {
+            since_hit += 1;
+        }
+        if since_hit >= EARLY_STOP_AFTER {
+            abort_rest = true;
+            info!(since_hit, "diminishing returns — cancelling remaining solver runs");
         }
     }
     for h in sweep_handles {

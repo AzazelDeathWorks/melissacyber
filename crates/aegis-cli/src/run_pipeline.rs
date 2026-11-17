@@ -301,7 +301,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // --- tool registry ---
     let registry = Arc::new(ToolRegistry::default());
-    let session_store = Arc::new(Mutex::new(impls::SessionStore::default()));
+    let session_store = Arc::new(Mutex::new(aegis_sandbox::SessionStore::default()));
     registry.register(Arc::new(TerminalTool { backend: backend.clone(), handle: handle.clone() }));
     registry.register(Arc::new(impls::ShellTool {
         backend: backend.clone(),
@@ -325,7 +325,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new()),
         allow: allowlist.clone(),
-        session: session_store,
+        session: session_store.clone(),
     }));
     registry.register(Arc::new(impls::PortScanTool { allow: allowlist.clone() }));
     registry.register(Arc::new(impls::DnsLookupTool));
@@ -371,7 +371,9 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     // --- validators (deterministic, non-AI) ---
     let mut validators = ValidatorRegistry::default();
-    let mut probe = ProbeClient::new(None)?.with_allow(allowlist.clone());
+    let mut probe = ProbeClient::new(None)?
+        .with_allow(allowlist.clone())
+        .with_session(session_store);
     if let Some(l) = &limiter {
         probe = probe.with_limiter(l.clone());
     }
@@ -797,7 +799,7 @@ async fn run_worker_job(
             .build()?,
         allow: allow.clone(),
         limiter: None,
-        session: Arc::new(Mutex::new(impls::SessionStore::default())),
+        session: Arc::new(Mutex::new(aegis_sandbox::SessionStore::default())),
     }));
     registry.register(Arc::new(ScopeCheckTool { allow: allow.clone() }));
     registry.register(Arc::new(ValidatorSubmitTool { tx: findings_tx }));

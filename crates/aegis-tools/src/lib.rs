@@ -11,6 +11,7 @@ pub mod spec;
 
 pub use impls::*;
 pub use aegis_sandbox::oob::{run_oob_server, OobHit, OobStore};
+pub use aegis_sandbox::SessionStore;
 pub use registry::ToolRegistry;
 pub use spec::{Tool, ToolError, ToolOutput, ToolSpec};
 pub mod cdp;
