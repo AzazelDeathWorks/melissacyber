@@ -178,8 +178,27 @@ pub async fn run_engagement(
     }
     } // !skip_discovery
 
-    let tasks = Coordinator::endpoint_tasks(&ctx.kg.lock().unwrap());
+    let mut tasks = Coordinator::endpoint_tasks(&ctx.kg.lock().unwrap());
     info!(endpoints = tasks.len(), "discovery produced endpoints");
+
+    // Discovery failure resilience: zero endpoints must not mean zero
+    // coverage — synthesize tasks from the scope base targets with common
+    // parameter guesses so solvers still mine the surface.
+    if tasks.is_empty() {
+        const COMMON_PARAMS: &[&str] = &[
+            "q", "id", "host", "cmd", "url", "path", "expr", "u", "search", "file",
+        ];
+        for t in &ctx.scope.targets {
+            tasks.push(EndpointTask {
+                url: t.value.clone(),
+                params: COMMON_PARAMS
+                    .iter()
+                    .map(|n| Param { name: n.to_string(), r#in: "query".into() })
+                    .collect(),
+            });
+        }
+        warn!(synthesized = tasks.len(), "discovery empty — synthesized fallback tasks");
+    }
 
     // --- Wave 2: solver swarm (bounded parallel, fresh context each) ---
     //

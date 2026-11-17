@@ -65,7 +65,9 @@ pub fn discovery_system(scope: &Scope) -> String {
         enumerate endpoints, parameters, auth flows, technologies.\n\
         Write EVERY discovered endpoint (with its params) to the KG via\n\
         kg_write (kind=endpoint, data: {{url, params: [...]}}).\n\
-        Infer framework-standard endpoints even when not linked.\n\n\
+        Infer framework-standard endpoints even when not linked.\n\
+        Stay strictly on target: do NOT explore the local filesystem,\n\
+        home dirs, or unrelated files — recon the in-scope URLs only.\n\n\
         {}\n\n{}",
         scope_block(scope),
         refusal_block(),
