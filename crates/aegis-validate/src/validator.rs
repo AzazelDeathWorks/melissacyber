@@ -87,7 +87,18 @@ pub async fn send_value(
             }
         }
         "json" => {
-            body = Some(serde_json::json!({ param.clone(): val }).to_string());
+            // Merge the injected value into the evidence's original JSON
+            // body so sibling fields (e.g. password on a login POST) are
+            // preserved; fall back to a single-field body when the
+            // evidence body is absent or not JSON.
+            let mut obj = ev["body"]
+                .as_str()
+                .or_else(|| ev["request"]["body"].as_str())
+                .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            obj.insert(param.clone(), serde_json::Value::String(val.to_string()));
+            body = Some(serde_json::Value::Object(obj).to_string());
             if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
                 hdrs.push(("content-type".into(), "application/json".into()));
             }
