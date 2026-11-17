@@ -1,0 +1,15 @@
+targets:
+  - kind: web_app
+    value: "http://127.0.0.1:8080"
+egress_allow:
+  - "127.0.0.1"
+  - "localhost"
+roe:
+  authorization_statement: "I authorize testing of this local DVWA benchmark instance."
+  allow_dos: false
+  allow_exfil: false
+  allow_persistence: false
+  allow_bruteforce: false
+  allow_social_engineering: false
+  rate_limit_rps: 20
+  hitl_required: false

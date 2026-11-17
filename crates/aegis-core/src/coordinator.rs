@@ -143,10 +143,13 @@ impl Coordinator {
         format!(
             "Objective: prove or disprove a {:?} vulnerability.\n\
              Endpoint: {}\nParameter: {} (in: {})\n\
+             First call kg_query (contains the endpoint URL) to reuse\n\
+             what sibling solvers already found or disproved here.\n\
              Work the hypothesis end-to-end: craft inputs, observe\n\
              responses, and if you can demonstrate it, submit via\n\
              validator_submit with complete evidence. If disproven,\n\
-             record what you tried in the KG.",
+             record a 'disproof: <class> on <endpoint>' note via kg_write\n\
+             and FINISH — do not burn remaining turns on a dead end.",
             class, task.url, param.name, param.r#in
         )
     }
