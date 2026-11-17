@@ -79,6 +79,8 @@ pub struct EngagementCtx {
     pub bounty_sidecar: bool,
     /// SelfOp bandit — solver prompt variants, rewarded by verified findings.
     pub selfop: Arc<Mutex<aegis_knowledge::selfop::SelfOp>>,
+    /// Scope-checked probe for deterministic surface mining (path fuzz).
+    pub probe: Option<aegis_validate::ProbeClient>,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,27 @@ pub struct FunnelStats {
 /// A function that resolves a role to a provider (primary; fallbacks are
 /// a router concern upstream). Injected so tests can hand in mocks.
 pub type ProviderFor = Arc<dyn Fn(&str) -> Option<Arc<dyn LlmProvider>> + Send + Sync>;
+
+/// Common parameter names guessed on endpoints where discovery found no
+/// injectable parameter, with the vuln classes each name plausibly maps
+/// to — keeps coverage bounded instead of the full class matrix.
+const PARAM_GUESSES: &[(&str, &[FindingClass])] = &[
+    ("q", &[FindingClass::Sqli, FindingClass::Xss, FindingClass::Ssti]),
+    ("search", &[FindingClass::Xss, FindingClass::Sqli]),
+    ("id", &[FindingClass::Sqli, FindingClass::AuthzIdor]),
+    ("u", &[FindingClass::Sqli]),
+    ("p", &[FindingClass::Sqli]),
+    ("cmd", &[FindingClass::CmdInjection]),
+    ("exec", &[FindingClass::CmdInjection]),
+    ("host", &[FindingClass::Ssrf, FindingClass::CmdInjection]),
+    ("url", &[FindingClass::Ssrf]),
+    ("target", &[FindingClass::Ssrf]),
+    ("path", &[FindingClass::FilePath, FindingClass::Ssrf]),
+    ("file", &[FindingClass::FilePath]),
+    ("expr", &[FindingClass::Ssti, FindingClass::CmdInjection]),
+    ("redirect", &[FindingClass::OpenRedirect]),
+    ("callback", &[FindingClass::Ssrf]),
+];
 
 pub async fn run_engagement(
     ctx: &mut EngagementCtx,
@@ -181,19 +204,60 @@ pub async fn run_engagement(
     let mut tasks = Coordinator::endpoint_tasks(&ctx.kg.lock().unwrap());
     info!(endpoints = tasks.len(), "discovery produced endpoints");
 
+    // Deterministic surface mining: LLM discovery only sees what pages
+    // link to — unlinked sinks (admin panels, debug endpoints, stray API
+    // routes) need a path wordlist. A random-path request per target sets
+    // the "not found" baseline; anything deviating is a real endpoint.
+    if let Some(probe) = &ctx.probe {
+        const COMMON_PATHS: &[&str] = &[
+            "/admin", "/login", "/api", "/api/v1", "/api/health", "/api/calc",
+            "/api/exec", "/api/run", "/api/status", "/api/users", "/backup",
+            "/backup/config.json", "/robots.txt", "/sitemap.xml", "/health",
+            "/status", "/internal-status", "/server-status", "/metrics",
+            "/config", "/.env", "/flag", "/ping", "/upload", "/debug", "/test",
+            "/console", "/docs", "/swagger.json", "/openapi.json",
+            "/actuator", "/actuator/health", "/graphql",
+        ];
+        let mut known: HashSet<String> = tasks.iter().map(|t| t.url.clone()).collect();
+        for t in &ctx.scope.targets {
+            let base = t.value.trim_end_matches('/');
+            let probe_url = format!("{base}/aegis-mine-{:x}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos());
+            let baseline = probe.get(&probe_url, &Default::default()).await.ok();
+            for path in COMMON_PATHS {
+                let url = format!("{base}{path}");
+                if known.contains(&url) {
+                    continue;
+                }
+                if let Ok(r) = probe.get(&url, &Default::default()).await {
+                    let differs = match &baseline {
+                        Some(b) => {
+                            r.status != b.status
+                                || (r.body.len() as i64 - b.body.len() as i64).abs() > 32
+                        }
+                        None => r.status != 404,
+                    };
+                    if differs {
+                        info!(url = %url, status = r.status, "surface mining hit");
+                        known.insert(url.clone());
+                        tasks.push(EndpointTask { url, params: vec![] });
+                    }
+                }
+            }
+        }
+        info!(endpoints = tasks.len(), "surface mining complete");
+    }
+
     // Discovery failure resilience: zero endpoints must not mean zero
     // coverage — synthesize tasks from the scope base targets with common
     // parameter guesses so solvers still mine the surface.
     if tasks.is_empty() {
-        const COMMON_PARAMS: &[&str] = &[
-            "q", "id", "host", "cmd", "url", "path", "expr", "u", "search", "file",
-        ];
         for t in &ctx.scope.targets {
             tasks.push(EndpointTask {
                 url: t.value.clone(),
-                params: COMMON_PARAMS
+                params: PARAM_GUESSES
                     .iter()
-                    .map(|n| Param { name: n.to_string(), r#in: "query".into() })
+                    .map(|(n, _)| Param { name: n.to_string(), r#in: "query".into() })
                     .collect(),
             });
         }
@@ -211,9 +275,24 @@ pub async fn run_engagement(
     ];
     let mut jobs: Vec<(EndpointTask, Param, FindingClass)> = vec![];
     for task in &tasks {
-        for param in &task.params {
-            for class in MVP_CLASSES {
-                jobs.push((task.clone(), param.clone(), *class));
+        if task.params.is_empty() {
+            // Discovery found the endpoint but no injectable param —
+            // guess common names with per-class affinity instead of the
+            // full class matrix.
+            for (pname, classes) in PARAM_GUESSES {
+                for class in *classes {
+                    jobs.push((
+                        task.clone(),
+                        Param { name: pname.to_string(), r#in: "query".into() },
+                        *class,
+                    ));
+                }
+            }
+        } else {
+            for param in &task.params {
+                for class in MVP_CLASSES {
+                    jobs.push((task.clone(), param.clone(), *class));
+                }
             }
         }
     }

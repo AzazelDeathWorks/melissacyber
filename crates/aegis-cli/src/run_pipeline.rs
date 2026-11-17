@@ -398,7 +398,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     validators.register(Arc::new(aegis_validate::FileUploadValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::DeserValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::RaceValidator { probe: probe.clone() }));
-    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe }));
+    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe: probe.clone() }));
 
     // --- providers ---
     let target_url = scope
@@ -484,6 +484,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
         policy: Some(policy.clone()),
         bounty_sidecar: matches!(mode, Mode::Bounty),
         selfop: selfop.clone(),
+        probe: Some(probe.clone()),
     };
 
     println!("engagement {engagement_id} | mode {mode:?} | sandbox {:?}", handle.backend);
@@ -692,7 +693,7 @@ pub async fn serve(port: u16, _mcp: bool, bind: &str, token: Option<String>) -> 
     validators.register(Arc::new(aegis_validate::FileUploadValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::DeserValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::RaceValidator { probe: probe.clone() }));
-    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe }));
+    validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe: probe.clone() }));
     let state = Arc::new(aegis_mcp::McpState {
         allow,
         validators: Arc::new(validators),
