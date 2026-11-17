@@ -107,14 +107,18 @@ pub async fn run_agent(
                     Ok(c) => break c,
                     Err(e) => {
                         attempt += 1;
-                        if !transient(&e) || attempt > 4 {
+                        // ~9 attempts / ~4min worst case: survive sustained
+                        // provider rate-limit windows instead of killing the
+                        // solver (observed: 80/80 solvers died on a 429 storm).
+                        if !transient(&e) || attempt > 8 {
                             return Err(anyhow::anyhow!(
                                 "provider failed after {attempt} attempt(s): {e}"
                             ));
                         }
                         let jitter = (attempt as u64 * 137) % 500;
-                        let wait =
-                            Duration::from_millis(500 * (1u64 << attempt) + jitter);
+                        let wait = Duration::from_millis(
+                            (500 * (1u64 << attempt)).min(60_000) + jitter,
+                        );
                         warn!(attempt, ?wait, err = %e, "provider error — retrying");
                         tokio::time::sleep(wait).await;
                     }
