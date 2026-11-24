@@ -159,6 +159,14 @@ impl Coordinator {
     pub const SWEEP_CLASSES: &[FindingClass] = &[
         FindingClass::InfoDisclosure,
         FindingClass::Cors,
+        FindingClass::HostHeader,
+        FindingClass::Secrets,
+        FindingClass::Csrf,
+        FindingClass::FileUpload,
+        FindingClass::BusinessLogic,
+        FindingClass::OpenRedirect,
+        FindingClass::SessionJwt,
+        FindingClass::Authn,
     ];
 
     /// Jobs for endpoints discovered with no injectable params, plus a

@@ -335,35 +335,65 @@ impl Tool for ValidatorSubmitTool {
         )
     }
     async fn call(&self, args: Value) -> Result<ToolOutput, ToolError> {
-        let class = match arg_str(&args, "class")? {
-            "sqli" => FindingClass::Sqli,
-            "nosqli" => FindingClass::Nosqli,
-            "cmd" | "cmd_injection" => FindingClass::CmdInjection,
-            "ssti" => FindingClass::Ssti,
-            "xss" => FindingClass::Xss,
-            "ssrf" => FindingClass::Ssrf,
-            "authn" => FindingClass::Authn,
-            "idor" | "authz" | "authz_idor" => FindingClass::AuthzIdor,
-            "jwt" | "session_jwt" => FindingClass::SessionJwt,
-            "deser" | "deserialization" => FindingClass::Deserialization,
-            "file_path" | "lfi" | "rfi" => FindingClass::FilePath,
-            "xxe" => FindingClass::Xxe,
-            "smuggling" => FindingClass::Smuggling,
-            "cors" => FindingClass::Cors,
-            "info_disclosure" | "info-disclosure" | "infodisclosure" | "info" => FindingClass::InfoDisclosure,
-            "open_redirect" | "open-redirect" | "redirect" => FindingClass::OpenRedirect,
-            "host_header" | "host-header" | "hostheader" => FindingClass::HostHeader,
-            "secrets" | "secret" => FindingClass::Secrets,
-            "csrf" => FindingClass::Csrf,
-            "idor" | "authz" | "authz_idor" => FindingClass::AuthzIdor,
-            "file_upload" | "file-upload" | "upload" => FindingClass::FileUpload,
-            "deserialization" | "deser" => FindingClass::Deserialization,
-            "race" | "race_condition" => FindingClass::Race,
-            "business_logic" | "business-logic" | "logic" => FindingClass::BusinessLogic,
-            "race" => FindingClass::Race,
-            "crypto" => FindingClass::Crypto,
-            "crash" => FindingClass::Crash,
-            _ => FindingClass::Other,
+        // Fuzzy class parse: solvers write free-text like "SQL Injection
+        // (UNION-based, SQLite)" or "path traversal / LFI" — an exact-match
+        // table sends nearly all of them to Other and skips the specialized
+        // validators. Order matters: most specific phrases first.
+        let c = arg_str(&args, "class")?.to_lowercase();
+        let c = c.trim();
+        let class = if c.contains("nosql") || c.contains("nosqli") {
+            FindingClass::Nosqli
+        } else if c.contains("sql") {
+            FindingClass::Sqli
+        } else if c.contains("xss") || c.contains("cross-site") || c.contains("cross site") {
+            FindingClass::Xss
+        } else if c.contains("ssrf") || c.contains("server-side request") {
+            FindingClass::Ssrf
+        } else if c.contains("ssti") || c.contains("template inj") {
+            FindingClass::Ssti
+        } else if c.contains("jwt") {
+            FindingClass::SessionJwt
+        } else if c.contains("idor") || c.contains("authz") {
+            FindingClass::AuthzIdor
+        } else if c.contains("cmd") || c.contains("command inj") || c.contains("rce")
+            || c.contains("os inject") || c.contains("code exec") {
+            FindingClass::CmdInjection
+        } else if c.contains("xxe") {
+            FindingClass::Xxe
+        } else if c.contains("smuggl") {
+            FindingClass::Smuggling
+        } else if c.contains("cors") {
+            FindingClass::Cors
+        } else if c.contains("redirect") {
+            FindingClass::OpenRedirect
+        } else if c.contains("csrf") {
+            FindingClass::Csrf
+        } else if c.contains("upload") {
+            FindingClass::FileUpload
+        } else if c.contains("deser") {
+            FindingClass::Deserialization
+        } else if c.contains("race") {
+            FindingClass::Race
+        } else if c.contains("logic") {
+            FindingClass::BusinessLogic
+        } else if c.contains("crypto") {
+            FindingClass::Crypto
+        } else if c.contains("crash") {
+            FindingClass::Crash
+        } else if c.contains("traversal") || c.contains("lfi") || c.contains("rfi")
+            || c.contains("file read") || c.contains("file_read") || c.contains("path") {
+            FindingClass::FilePath
+        } else if c.contains("secret") || c.contains("api_key") || c.contains("api key") {
+            FindingClass::Secrets
+        } else if c.contains("host") && c.contains("header") {
+            FindingClass::HostHeader
+        } else if c.contains("disclosure") || c.contains("info") || c.contains("leak")
+            || c.contains("exposure") || c.contains("debug") {
+            FindingClass::InfoDisclosure
+        } else if c.contains("auth") || c.contains("login") || c.contains("bypass") {
+            FindingClass::Authn
+        } else {
+            FindingClass::Other
         };
         let severity = match arg_str(&args, "severity")? {
             "critical" => Severity::Critical,

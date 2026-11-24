@@ -1,0 +1,16 @@
+probe() { printf '%-40s ' "$1"; curl -s -w ' [%{http_code}]\n' "$1" | head -c 200 | tr '\n' '|'; echo; }
+B=http://127.0.0.1:8897
+probe "$B/search?q=1%27%20OR%20%271%27%3D%271"
+probe "$B/search?q=1%20UNION%20SELECT%201"
+probe "$B/search?q=%25"
+probe "$B/search?q=_"
+probe "$B/search?q="
+probe "$B/search?q=1%20AND%201%3D2"
+probe "$B/orders/1001%20OR%201%3D1"
+probe "$B/orders/1%20UNION%20SELECT%201"
+probe "$B/orders/1002%27"
+probe "$B/orders/"
+probe "$B/orders"
+probe "$B/debug?u=1&debug=1"
+probe "$B/debug?u=1&sql=1"
+probe "$B/debug?u=1&format=json"

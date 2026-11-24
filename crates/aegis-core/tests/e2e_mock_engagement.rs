@@ -388,7 +388,10 @@ async fn e2e_mock_engagement_verifies_real_vulns() {
                 Verdict::Rejected{reason} => format!("REJ {reason}"), _ => "preview".into() });
     }
     assert_eq!(result.endpoints, 6, "discovery should write 6 endpoints");
-    assert_eq!(result.solver_runs, 36, "6 endpoints x 1 param x 6 classes");
+    assert_eq!(
+        result.solver_runs, 37,
+        "6 endpoints x 1 param x 6 classes + url->OpenRedirect affinity"
+    );
     assert!(
         verified_classes.contains(&aegis_validate::FindingClass::Sqli),
         "sqli must be verified: {result:?}"

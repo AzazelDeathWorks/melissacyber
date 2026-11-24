@@ -128,13 +128,34 @@ const PARAM_GUESSES: &[(&str, &[FindingClass])] = &[
     ("cmd", &[FindingClass::CmdInjection]),
     ("exec", &[FindingClass::CmdInjection]),
     ("host", &[FindingClass::Ssrf, FindingClass::CmdInjection]),
-    ("url", &[FindingClass::Ssrf]),
+    ("url", &[FindingClass::Ssrf, FindingClass::OpenRedirect]),
     ("target", &[FindingClass::Ssrf]),
     ("path", &[FindingClass::FilePath, FindingClass::Ssrf]),
     ("file", &[FindingClass::FilePath]),
     ("expr", &[FindingClass::Ssti, FindingClass::CmdInjection]),
     ("redirect", &[FindingClass::OpenRedirect]),
     ("callback", &[FindingClass::Ssrf]),
+];
+
+/// Substring affinities applied to params discovery already found (on top
+/// of MVP_CLASSES): keeps the job count bounded while still covering the
+/// classes a param name strongly implies.
+const PARAM_AFFINITY: &[(&str, &[FindingClass])] = &[
+    ("id", &[FindingClass::AuthzIdor]),
+    ("url", &[FindingClass::OpenRedirect]),
+    ("callback", &[FindingClass::OpenRedirect]),
+    ("redirect", &[FindingClass::OpenRedirect]),
+    ("next", &[FindingClass::OpenRedirect]),
+    ("goto", &[FindingClass::OpenRedirect]),
+    ("return", &[FindingClass::OpenRedirect]),
+    ("dest", &[FindingClass::OpenRedirect]),
+    ("continue", &[FindingClass::OpenRedirect]),
+    ("token", &[FindingClass::SessionJwt]),
+    ("jwt", &[FindingClass::SessionJwt]),
+    ("file", &[FindingClass::FileUpload]),
+    ("upload", &[FindingClass::FileUpload]),
+    ("xml", &[FindingClass::Xxe]),
+    ("feed", &[FindingClass::Xxe]),
 ];
 
 pub async fn run_engagement(
@@ -292,6 +313,16 @@ pub async fn run_engagement(
             for param in &task.params {
                 for class in MVP_CLASSES {
                     jobs.push((task.clone(), param.clone(), *class));
+                }
+                // Extra classes implied by the param name (id -> IDOR,
+                // url/callback -> open redirect, token -> JWT, ...).
+                let pn = param.name.to_lowercase();
+                for (needle, classes) in PARAM_AFFINITY {
+                    if pn.contains(needle) {
+                        for class in *classes {
+                            jobs.push((task.clone(), param.clone(), *class));
+                        }
+                    }
                 }
             }
         }
