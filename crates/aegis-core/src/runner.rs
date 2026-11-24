@@ -81,6 +81,12 @@ pub async fn run_agent(
     let mut messages = vec![Message::system(system), Message::user(task)];
     let mut turns = 0;
     let (mut in_tok, mut out_tok) = (0u64, 0u64);
+    // Success-stall tracking: solvers sometimes find proof then keep
+    // enumerating until max_turns without ever submitting (observed live:
+    // FLAG{...} in tool output, zero validator_submit calls).
+    let mut saw_submit = false;
+    let mut proof_nudged = false;
+    let mut last_nudge_turn = 0u32;
 
     loop {
         if turns >= max_turns {
@@ -148,7 +154,11 @@ pub async fn run_agent(
             });
         }
 
+        let mut saw_proof = false;
         for call in calls {
+            if call.name == "validator_submit" {
+                saw_submit = true;
+            }
             let result = match reg_tools.iter().find(|t| t.spec().name == call.name) {
                 Some(tool) => match policy {
                     Some(b) => match b.dispatch(tool, call.arguments.clone(), role).await {
@@ -165,6 +175,9 @@ pub async fn run_agent(
             if result.contains("scope") && result.contains("Violation") {
                 warn!(tool = call.name, "scope violation attempted");
             }
+            if result.contains("FLAG{") || result.contains("flag{") {
+                saw_proof = true;
+            }
             let mut result = result;
             if result.len() > TOOL_MAX_BYTES {
                 result.truncate(TOOL_MAX_BYTES);
@@ -177,6 +190,25 @@ pub async fn run_agent(
                 call.name, result
             );
             messages.push(Message::tool_result(call.id, wrapped));
+        }
+
+        // Bank-the-win nudge: a solver that demonstrated a flaw but never
+        // submits loses the finding at max_turns. Remind once on proof,
+        // and periodically while it has never submitted.
+        let submittable = matches!(role, "solver" | "bounty");
+        if !saw_submit && submittable {
+            let periodic = turns > 2 && turns - last_nudge_turn >= 8;
+            if (saw_proof && !proof_nudged) || periodic {
+                proof_nudged |= saw_proof;
+                last_nudge_turn = turns;
+                messages.push(Message::user(
+                    "SYSTEM NUDGE: if any step produced a reproduction (flag, data dump, \
+                     command output, auth bypass), call validator_submit NOW with that \
+                     exact request as evidence — then keep hunting. Do not bank wins in \
+                     your head; unsubmitted proof is lost at the turn cap."
+                        .to_string(),
+                ));
+            }
         }
     }
 }

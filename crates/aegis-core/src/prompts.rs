@@ -38,6 +38,12 @@ pub fn validator_contract() -> &'static str {
     "FINDING CONTRACT:\n\
     - A finding is a RUMOR until validator_submit proves it. Claim nothing\n\
       you cannot demonstrate. Submit ONLY positive, reproduced findings.\n\
+    - SUBMIT IMMEDIATELY: the moment you have ANY reproduction — a flag,\n\
+      dumped data, an executed command, an auth bypass, a reflected payload —\n\
+      STOP exploring and call validator_submit in your very next step.\n\
+      Submit early, submit often: one submission per demonstrated flaw.\n\
+      Observed failure mode: solvers find the flag, keep enumerating, hit\n\
+      the turn cap and report NOTHING. A submitted rumor beats a lost proof.\n\
     - evidence MUST be this JSON shape (validators replay it verbatim):\n\
         {\"request\":{\"method\":\"GET|POST\",\"url\":\"...\",\"headers\":{...},\"params\":{...},\"body\":\"...\"},\n\
          \"param\":\"<bare name — no annotations like 'u (query)'>\",\"payload\":\"...\",\"expect\":\"<marker string that MUST appear in the replayed response>\"}\n\
@@ -64,7 +70,10 @@ pub fn discovery_system(scope: &Scope) -> String {
         "You are a melissacyber discovery agent. Map the attack surface:\n\
         enumerate endpoints, parameters, auth flows, technologies.\n\
         Write EVERY discovered endpoint (with its params) to the KG via\n\
-        kg_write (kind=endpoint, data: {{url, params: [...]}}).\n\
+        kg_write (kind=endpoint, data: {{url, params: [...]}}) THE MOMENT\n\
+        you find it — one kg_write per endpoint, never batch, never defer.\n\
+        Your ONLY output that counts is KG nodes: exploration with no\n\
+        kg_write calls is wasted work.\n\
         Infer framework-standard endpoints even when not linked.\n\
         Stay strictly on target: do NOT explore the local filesystem,\n\
         home dirs, or unrelated files — recon the in-scope URLs only.\n\n\

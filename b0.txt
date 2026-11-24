@@ -1,0 +1,1 @@
+{"env": "prod", "internal_secret": "pepper123", "note": "X-Internal-Auth = sha256(internal_secret + path)"}
