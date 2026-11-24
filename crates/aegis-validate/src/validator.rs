@@ -331,21 +331,47 @@ pub async fn marker_replay(
         .as_str()
         .or_else(|| f.evidence["body"].as_str())
         .map(String::from);
-    let params: std::collections::HashMap<String, String> = req["params"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-
+    // Solvers commonly embed the injection in request.url AND repeat it in
+    // request.params. Split the URL: base (no query) + its own pairs, then
+    // overlay evidence params so each key is sent exactly once.
+    let (base_url, mut params) = match reqwest::Url::parse(url) {
+        Ok(u) => {
+            let mut pairs: std::collections::HashMap<String, String> = u
+                .query_pairs()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            let mut b = u;
+            b.set_query(None);
+            (b.to_string(), pairs)
+        }
+        Err(_) => (url.to_string(), std::collections::HashMap::new()),
+    };
+    if let Some(m) = req["params"].as_object() {
+        for (k, v) in m {
+            if let Some(s) = v.as_str() {
+                params.insert(k.clone(), s.to_string());
+            }
+        }
+    }
     let r = probe
-        .send(method, url, &params, &hdrs, body)
+        .send(method, &base_url, &params, &hdrs, body)
         .await
         .map_err(|_| "replay request failed".to_string())?;
+    // Baseline must NOT contain the injected request: previously it replayed
+    // the same URL (injection included) so the "absent in baseline" check
+    // always failed for url-embedded payloads. Rebuild it as the same params
+    // minus the evidence's injected parameter, with no forged headers.
+    let injected = f.evidence["param"]
+        .as_str()
+        .map(|p| p.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string());
+    let mut base_params = params.clone();
+    if let Some(p) = injected.as_deref().filter(|p| !p.is_empty()) {
+        base_params.remove(p);
+    } else {
+        base_params.clear();
+    }
     let base_body = probe
-        .get2(url, &std::collections::HashMap::new(), &[])
+        .get2(&base_url, &base_params, &[])
         .await
         .map(|b| b.body)
         .unwrap_or_default();
