@@ -240,11 +240,24 @@ pub async fn run_engagement(
             "/actuator", "/actuator/health", "/graphql",
         ];
         let mut known: HashSet<String> = tasks.iter().map(|t| t.url.clone()).collect();
+        // POST-only sinks (CSRF forms, upload, order/buy endpoints) return
+        // 404 to GET — probe a second list with POST so they surface.
+        const COMMON_POST_PATHS: &[&str] = &[
+            "/upload", "/import", "/login", "/register", "/api/login",
+            "/api/upload", "/api/import", "/order", "/buy", "/shop/buy",
+            "/checkout", "/cart", "/comment", "/feedback", "/subscribe",
+            "/account/change-email", "/account/update", "/profile",
+            "/graphql", "/api/graphql",
+        ];
         for t in &ctx.scope.targets {
             let base = t.value.trim_end_matches('/');
             let probe_url = format!("{base}/aegis-mine-{:x}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos());
             let baseline = probe.get(&probe_url, &Default::default()).await.ok();
+            let baseline_post = probe
+                .send("POST", &probe_url, &Default::default(), &[], Some(String::new()))
+                .await
+                .ok();
             for path in COMMON_PATHS {
                 let url = format!("{base}{path}");
                 if known.contains(&url) {
@@ -260,6 +273,29 @@ pub async fn run_engagement(
                     };
                     if differs {
                         info!(url = %url, status = r.status, "surface mining hit");
+                        known.insert(url.clone());
+                        tasks.push(EndpointTask { url, params: vec![] });
+                    }
+                }
+            }
+            for path in COMMON_POST_PATHS {
+                let url = format!("{base}{path}");
+                if known.contains(&url) {
+                    continue;
+                }
+                if let Ok(r) = probe
+                    .send("POST", &url, &Default::default(), &[], Some(String::new()))
+                    .await
+                {
+                    let differs = match &baseline_post {
+                        Some(b) => {
+                            r.status != b.status
+                                || (r.body.len() as i64 - b.body.len() as i64).abs() > 32
+                        }
+                        None => r.status != 404,
+                    };
+                    if differs {
+                        info!(url = %url, status = r.status, "surface mining hit (POST)");
                         known.insert(url.clone());
                         tasks.push(EndpointTask { url, params: vec![] });
                     }
