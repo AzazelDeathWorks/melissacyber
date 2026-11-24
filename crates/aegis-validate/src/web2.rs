@@ -217,17 +217,32 @@ impl Validator for IdorValidator {
             Ok(r) => r,
             Err(e) => return Verdict::Rejected { reason: format!("probe failed: {e}") },
         };
-        if r.status == 200 && r.body.len() > 64 {
+        // Baseline: a clearly-invalid object id at the same injection
+        // point. IDOR proof = alt object returns real content that the
+        // invalid id does NOT (body-size heuristics killed real bugs).
+        let invalid = match send_value(&self.probe, &f.evidence, "-1").await {
+            Ok(r) => Some(r),
+            Err(_) => send_value(&self.probe, &f.evidence, "aegis-nonexistent-object")
+                .await
+                .ok(),
+        };
+        let base_body = invalid.as_ref().map(|b| b.body.as_str()).unwrap_or("");
+        let differs = !base_body.is_empty()
+            && r.body != base_body
+            // ignore echoes of the ids themselves when comparing
+            && r.body.replace(&alt, "") != base_body.replace("-1", "").replace("aegis-nonexistent-object", "");
+        let rich = r.body.len() > 40 || f.evidence["expect"].as_str().is_some_and(|m| r.body.contains(m));
+        if r.status == 200 && (differs || (base_body.is_empty() && rich)) {
             Verdict::Verified {
                 reproduction: format!(
-                    "idor verified: object '{alt}' at {} returned status 200 ({} bytes) — object reference accepted without authz check",
+                    "idor verified: object '{alt}' at {} returns content ({} bytes) that an invalid id does not — no authz check",
                     ev_str(f, &["url"]),
                     r.body.len()
                 ),
             }
         } else {
             Verdict::Rejected {
-                reason: format!("alt object fetch failed (status {})", r.status),
+                reason: format!("alt object indistinguishable from invalid-id baseline (status {})", r.status),
             }
         }
     }
