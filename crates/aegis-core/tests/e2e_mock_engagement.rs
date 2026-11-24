@@ -104,7 +104,7 @@ async fn vulnerable_target() -> SocketAddr {
                     "/tpl" => {
                         let n = params.get("name").cloned().unwrap_or_default();
                         if n.contains("{{") && n.contains('*') && n.contains("}}") {
-                            ("200 OK", "result: 475906".into())
+                            ("200 OK", "result: 476099".into())
                         } else {
                             ("200 OK", format!("hello {n}"))
                         }

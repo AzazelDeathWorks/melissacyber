@@ -25,7 +25,7 @@ pub use cmd::CmdInjectionValidator;
 pub use file_path::FilePathValidator;
 pub use web2::{BusinessLogicValidator, CsrfValidator, DeserValidator, FileUploadValidator, HostHeaderValidator, IdorValidator, OpenRedirectValidator, RaceValidator, SecretsValidator};
 pub use generic::{CorsValidator, InfoDisclosureValidator, JwtValidator, XxeValidator};
-pub use replay::ReplayValidator;
+pub use replay::{ClassBoundReplayValidator, ReplayValidator};
 pub use sqli::SqliValidator;
 pub use ssti::SstiValidator;
 pub use ssrf::SsrfValidator;

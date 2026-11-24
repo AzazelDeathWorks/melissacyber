@@ -614,6 +614,25 @@ pub async fn run_engagement(
                         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                         verdict = v.validate(&f).await;
                     }
+                    // Misclassified-class rescue: solvers sometimes file a
+                    // real bug under the wrong class (LFI as ssrf, traceback
+                    // as cmdi). If the class validator rejected but the
+                    // generic marker-replay still reproduces, verify —
+                    // deterministic, so no FP risk added.
+                    if matches!(verdict, Verdict::Rejected { .. })
+                        && f.class != aegis_validate::FindingClass::Other
+                    {
+                        if let Some(gen) = validators.get(&aegis_validate::FindingClass::Other) {
+                            if let Verdict::Verified { reproduction } = gen.validate(&f).await {
+                                verdict = Verdict::Verified {
+                                    reproduction: format!(
+                                        "{reproduction} [rescue: submitted as {:?}, class validator rejected]",
+                                        f.class
+                                    ),
+                                };
+                            }
+                        }
+                    }
                     match &verdict {
                         Verdict::NeedsRetry { reason } => {
                             *rej.lock().unwrap() += 1;

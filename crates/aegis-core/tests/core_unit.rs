@@ -160,14 +160,14 @@ async fn critic_gate_drops_findings() {
 fn arena_judge_and_scoring() {
     use aegis_core::{apply, judge, rule_matches, ArenaScore};
     // undetected landing: attacker scores
-    let (landed, det) = judge("GET /tpl?s={{691*689}}", &[], "475906");
+    let (landed, det) = judge("GET /tpl?s={{691*689}}", &[], "476099");
     assert!(landed && !det);
     let mut sc = ArenaScore { attacker: 0, defender: 0 };
     apply(&mut sc, landed, det);
     assert_eq!(sc.attacker, 1);
     // learned rule catches next identical attack: defender scores
     let rule = "cs-uri-query|contains: 's'";
-    let (l2, d2) = judge("GET /tpl?s={{691*689}}", &[rule.into()], "475906");
+    let (l2, d2) = judge("GET /tpl?s={{691*689}}", &[rule.into()], "476099");
     assert!(l2 && d2);
     apply(&mut sc, l2, d2);
     assert_eq!(sc.defender, 1);

@@ -1,4 +1,4 @@
-//! SSTI: arithmetic-evaluation proof — 691*689 must render as 475906.
+//! SSTI: arithmetic-evaluation proof — 691*689 must render as 476099.
 
 use crate::finding::{Finding, FindingClass};
 use crate::probe::ProbeClient;
@@ -31,7 +31,7 @@ impl Validator for SstiValidator {
         let Ok(base) = send("aegisbase").await else {
             return Verdict::Rejected { reason: "baseline probe failed".into() };
         };
-        let marker = "475906"; // 691*689 — an improbable literal
+        let marker = "476099"; // 691*689 — an improbable literal
         for payload in [
             "{{691*689}}".to_string(),
             "${691*689}".to_string(),
@@ -39,7 +39,7 @@ impl Validator for SstiValidator {
             "<%= 691*689 %>".to_string(),
             "*{691*689}*".to_string(),
             "${T(java.lang.Math).floor(691.5*689)}".to_string(),
-            "{{range.print 475906}}".to_string(),
+            "{{range.print 476099}}".to_string(),
         ] {
             if let Ok(r) = send(&payload).await {
                 if r.body.contains(marker) && !base.body.contains(marker) {

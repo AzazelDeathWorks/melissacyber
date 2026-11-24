@@ -2,7 +2,7 @@
 
 use crate::finding::{Finding, FindingClass, Severity};
 use crate::probe::ProbeClient;
-use crate::validator::{evidence_headers, send_value, Validator};
+use crate::validator::{evidence_headers, send_value, send_value_nofollow, Validator};
 use crate::verdict::Verdict;
 
 
@@ -32,7 +32,9 @@ impl Validator for OpenRedirectValidator {
     async fn validate(&self, f: &Finding) -> Verdict {
         let marker = "aegis-oob-redirect.example";
         let val = format!("https://{marker}/x");
-        let r = match send_value(&self.probe, &f.evidence, &val).await {
+        // Raw hop: following the 302 would leave scope and be refused —
+        // the Location header IS the proof.
+        let r = match send_value_nofollow(&self.probe, &f.evidence, &val).await {
             Ok(r) => r,
             Err(e) => return Verdict::Rejected { reason: format!("probe failed: {e}") },
         };

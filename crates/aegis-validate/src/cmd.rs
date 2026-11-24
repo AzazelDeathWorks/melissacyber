@@ -1,7 +1,7 @@
 //! Command injection: arithmetic-eval + timing proofs.
 //!
 //! The canary is `echo $((691*689))` — the payload string never contains
-//! the expected output `475906`, so a reflected-but-not-executed payload
+//! the expected output `476099`, so a reflected-but-not-executed payload
 //! cannot satisfy the check (no false-positive path).
 
 use crate::finding::{Finding, FindingClass};
@@ -14,7 +14,7 @@ pub struct CmdInjectionValidator {
     pub probe: ProbeClient,
 }
 
-const MARKER: &str = "475906"; // 691*689
+const MARKER: &str = "476099"; // 691*689
 
 #[async_trait::async_trait]
 impl Validator for CmdInjectionValidator {
@@ -36,7 +36,7 @@ impl Validator for CmdInjectionValidator {
         };
 
         // 1. Arithmetic-eval: injected command output must appear in
-        //    response. "475906" is never part of the payload text.
+        //    response. "476099" is never part of the payload text.
         for payload in [
             ";echo $((691*689))".to_string(),
             "|echo $((691*689))".to_string(),
@@ -71,7 +71,7 @@ impl Validator for CmdInjectionValidator {
         if base_t.len() == 2 && inj_t.len() == 2 {
             base_t.sort();
             inj_t.sort();
-            if inj_t[0] > base_t[1] + Duration::from_millis(2500) {
+            if inj_t[0] > base_t[1] + Duration::from_millis(1500) {
                 return Verdict::Verified {
                     reproduction: format!(
                         "injected '; sleep 3' -> {}ms vs {}ms baseline",

@@ -80,6 +80,54 @@ impl ProbeClient {
         self.send("GET", url, params, headers, None).await
     }
 
+    /// Single request with NO redirect following — the response's own
+    /// status/headers (incl. Location) are returned as-is. For validators
+    /// that must inspect the redirect target itself (open redirect).
+    pub async fn send_nofollow(
+        &self,
+        method: &str,
+        url: &str,
+        params: &HashMap<String, String>,
+        headers: &[(String, String)],
+        body: Option<String>,
+    ) -> anyhow::Result<ProbeResponse> {
+        let url = reqwest::Url::parse(url)?;
+        let host = url.host_str().unwrap_or("").to_string();
+        if !self.allow.allows(&host) {
+            anyhow::bail!("validator refused out-of-scope host {host}");
+        }
+        if let Some(l) = &self.limiter {
+            l.wait().await;
+        }
+        let start = Instant::now();
+        let mut req = self
+            .client
+            .request(method.parse().unwrap_or(reqwest::Method::GET), url.clone());
+        if !params.is_empty() {
+            req = req.query(params);
+        }
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(b) = &body {
+            req = req.body(b.clone());
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let resp_headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        let body = resp.text().await.unwrap_or_default();
+        Ok(ProbeResponse {
+            status,
+            body,
+            elapsed: start.elapsed(),
+            headers: resp_headers,
+        })
+    }
+
     /// Full request: any method, optional body. Follows up to 5 redirects,
     /// checking each hop against the scope allowlist.
     pub async fn send(

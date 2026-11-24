@@ -401,6 +401,20 @@ pub async fn run(args: RunArgs) -> anyhow::Result<()> {
     validators.register(Arc::new(aegis_validate::DeserValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::RaceValidator { probe: probe.clone() }));
     validators.register(Arc::new(aegis_validate::BusinessLogicValidator { probe: probe.clone() }));
+    // Classes with no dedicated validator fall back to the generic
+    // marker-replay check instead of being dropped.
+    for cls in [
+        aegis_validate::FindingClass::Authn,
+        aegis_validate::FindingClass::Nosqli,
+        aegis_validate::FindingClass::Smuggling,
+        aegis_validate::FindingClass::Crypto,
+        aegis_validate::FindingClass::Crash,
+    ] {
+        validators.register(Arc::new(aegis_validate::ClassBoundReplayValidator {
+            probe: probe.clone(),
+            cls,
+        }));
+    }
 
     // --- providers ---
     let target_url = scope
@@ -890,7 +904,7 @@ pub async fn arena(rounds: usize) -> anyhow::Result<()> {
         let attack = attack.as_str();
         // Deterministic stand-in for the target: attacker "lands" when the
         // payload class is one the seeded app is vulnerable to.
-        let response = if attack.contains("691*689") { "475906" } else { "" };
+        let response = if attack.contains("691*689") { "476099" } else { "" };
         let (landed, detected) = judge(attack, &defender_rules, response);
         apply(&mut score, landed, detected);
         append_trace(trace_path, &ArenaTrace {

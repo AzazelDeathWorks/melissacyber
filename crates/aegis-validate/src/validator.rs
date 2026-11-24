@@ -136,6 +136,59 @@ pub async fn send_value(
     probe.send(&method, &clean_url, &params, &hdrs, body).await
 }
 
+/// Same injection-point-aware send as `send_value`, but does NOT follow
+/// redirects — the 3xx response and its Location header are returned
+/// verbatim. Open-redirect validation needs the raw hop (following the
+/// redirect would hit the scope check on the out-of-scope target).
+pub async fn send_value_nofollow(
+    probe: &crate::probe::ProbeClient,
+    ev: &serde_json::Value,
+    val: &str,
+) -> anyhow::Result<crate::probe::ProbeResponse> {
+    let url = ev["url"]
+        .as_str()
+        .or_else(|| ev["request"]["url"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("evidence missing url"))?
+        .to_string();
+    let param = sanitize_param(ev["param"].as_str().unwrap_or(""));
+    let method = ev["method"]
+        .as_str()
+        .or_else(|| ev["request"]["method"].as_str())
+        .unwrap_or("GET")
+        .to_uppercase();
+    let mut hdrs: Vec<(String, String)> = collect_headers(ev);
+    let mut params = std::collections::HashMap::new();
+    let mut body: Option<String> = None;
+    match ev["in"]
+        .as_str()
+        .or_else(|| ev["request"]["in"].as_str())
+        .unwrap_or("query")
+    {
+        "form" | "body" if method != "GET" => {
+            body = Some(format!("{}={}", urlencoding(&param), urlencoding(val)));
+        }
+        "json" => {
+            let mut obj = ev["body"]
+                .as_str()
+                .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            obj.insert(param.clone(), serde_json::Value::String(val.to_string()));
+            body = Some(serde_json::Value::Object(obj).to_string());
+        }
+        "header" => {
+            hdrs.push((param.clone(), val.to_string()));
+        }
+        _ => {
+            params.insert(param.clone(), val.to_string());
+        }
+    }
+    let clean_url = rebuild_url(&url, &param);
+    probe
+        .send_nofollow(&method, &clean_url, &params, &hdrs, body)
+        .await
+}
+
 /// URL-encode for form bodies (application/x-www-form-urlencoded).
 pub fn urlencoding(s: &str) -> String {
     let mut out = String::new();
