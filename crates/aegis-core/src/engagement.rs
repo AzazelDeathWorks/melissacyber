@@ -371,9 +371,37 @@ pub async fn run_engagement(
             seen.insert((t.url.clone(), p.name.clone(), format!("{c:?}").to_lowercase()))
         });
     }
+    // Coverage-aware scheduling: sort by class prior alone clusters the
+    // first endpoints x all classes, so a capped agent budget starves the
+    // classes/endpoints at the tail. Round-robin interleave by class —
+    // one job per class per round, classes ordered by prior — so every
+    // class is represented before any class gets its second job.
     {
         let lib = ctx.patterns.lock().unwrap();
-        jobs.sort_by_key(|(_, _, c)| std::cmp::Reverse(lib.class_prior(&format!("{c:?}").to_lowercase())));
+        let class_key = |c: &FindingClass| format!("{c:?}").to_lowercase();
+        let mut by_class: std::collections::HashMap<String, std::collections::VecDeque<(EndpointTask, Param, FindingClass)>> =
+            std::collections::HashMap::new();
+        for job in jobs.drain(..) {
+            by_class.entry(class_key(&job.2)).or_default().push_back(job);
+        }
+        let mut class_order: Vec<String> = by_class.keys().cloned().collect();
+        class_order.sort_by_key(|c| std::cmp::Reverse(lib.class_prior(c)));
+        let mut interleaved = Vec::new();
+        loop {
+            let mut added = false;
+            for ck in &class_order {
+                if let Some(q) = by_class.get_mut(ck) {
+                    if let Some(job) = q.pop_front() {
+                        interleaved.push(job);
+                        added = true;
+                    }
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        jobs = interleaved;
     }
 
     let target_host = ctx
@@ -598,6 +626,22 @@ pub async fn run_engagement(
             inf: Arc<Mutex<usize>>,
         ) {
             *cand.lock().unwrap() += 1;
+            // Disproof spam guard: solvers sometimes submit their negative
+            // results as findings despite the prompt saying kg_write. A
+            // disproof is not a vuln candidate — drop it before it burns
+            // critic+validator budget (but don't count it as a rejection).
+            {
+                let tl = f.title.to_lowercase();
+                if tl.contains("disproven")
+                    || tl.contains("disproved")
+                    || tl.starts_with("disproof")
+                    || tl.contains(" is not present")
+                    || tl.contains("not vulnerable")
+                {
+                    info!(title = %f.title, "disproof submitted as finding — dropped (use kg_write)");
+                    return;
+                }
+            }
             // Reachability prefilter (taint-lite): a candidate with no
             // request path can never be reproduced — kill before burning
             // critic+validator budget on it.

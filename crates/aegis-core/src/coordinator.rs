@@ -149,7 +149,11 @@ impl Coordinator {
              responses, and if you can demonstrate it, submit via\n\
              validator_submit with complete evidence. If disproven,\n\
              record a 'disproof: <class> on <endpoint>' note via kg_write\n\
-             and FINISH — do not burn remaining turns on a dead end.",
+             (NEVER validator_submit — disproofs are not findings) and\n\
+             FINISH — do not burn remaining turns on a dead end.\n\
+             Stay on your assigned class — sibling solvers cover the\n\
+             others; only report a different class if you hit it\n\
+             incidentally and it is concrete.",
             class, task.url, param.name, param.r#in
         )
     }
