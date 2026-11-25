@@ -107,8 +107,11 @@ pub async fn send_value(
             hdrs.push((param.clone(), val.to_string()));
         }
         "path" => {
-            // `{param}` placeholder in the URL is replaced; otherwise the
-            // value is appended as a trailing segment.
+            // `{param}` placeholder in the URL is replaced. Otherwise
+            // REST object addressing: the object reference IS the last
+            // path segment — replace it (appending a trailing segment
+            // addresses a nonexistent child resource and both probe and
+            // baseline hit the same object, killing real IDORs).
             let u = if url.contains('{') {
                 let mut u2 = url.clone();
                 for (k, v) in ev["path_params"]
@@ -121,8 +124,15 @@ pub async fn send_value(
                     }
                 }
                 u2.replace(&format!("{{{param}}}"), &percent_path(val))
+            } else if let Some(orig) = ev["value"].as_str().or_else(|| ev["original"].as_str()).filter(|s| !s.is_empty()) {
+                // solver told us the exact object id it saw — swap it
+                url.replacen(orig, &percent_path(val), 1)
             } else {
-                format!("{}/{}", url.trim_end_matches('/'), percent_path(val))
+                let base = url.split('?').next().unwrap_or(&url);
+                match base.rfind('/') {
+                    Some(idx) => format!("{}/{}", &base[..idx], percent_path(val)),
+                    None => format!("{}/{}", base.trim_end_matches('/'), percent_path(val)),
+                }
             };
             return probe.send(&method, &u, &params, &hdrs, body).await;
         }

@@ -213,16 +213,27 @@ impl Validator for IdorValidator {
         if alt.is_empty() {
             return Verdict::Rejected { reason: "evidence lacks alt_id".into() };
         }
-        let r = match send_value(&self.probe, &f.evidence, &alt).await {
+        // REST object ids live in the path (/orders/1002), not the query
+        // string — solvers rarely set in:"path". When the evidence URL
+        // carries no query string, injecting ?id=... changes nothing and
+        // the baseline equals the probe, killing real IDORs. Force path
+        // injection in that case.
+        let mut evidence = f.evidence.clone();
+        let url_str = evidence["url"].as_str().or_else(|| evidence["request"]["url"].as_str()).unwrap_or("");
+        let inj_missing = evidence["in"].as_str().is_none() && evidence["request"]["in"].as_str().is_none();
+        if inj_missing && !url_str.contains('?') {
+            evidence["in"] = serde_json::Value::String("path".into());
+        }
+        let r = match send_value(&self.probe, &evidence, &alt).await {
             Ok(r) => r,
             Err(e) => return Verdict::Rejected { reason: format!("probe failed: {e}") },
         };
         // Baseline: a clearly-invalid object id at the same injection
         // point. IDOR proof = alt object returns real content that the
         // invalid id does NOT (body-size heuristics killed real bugs).
-        let invalid = match send_value(&self.probe, &f.evidence, "-1").await {
+        let invalid = match send_value(&self.probe, &evidence, "-1").await {
             Ok(r) => Some(r),
-            Err(_) => send_value(&self.probe, &f.evidence, "aegis-nonexistent-object")
+            Err(_) => send_value(&self.probe, &evidence, "aegis-nonexistent-object")
                 .await
                 .ok(),
         };

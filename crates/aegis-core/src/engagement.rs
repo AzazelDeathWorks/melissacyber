@@ -728,7 +728,20 @@ pub async fn run_engagement(
                             // Second-verifier pass for high/critical: one
                             // independent re-validate before it enters the report.
                             if matches!(f.severity, aegis_validate::Severity::High | aegis_validate::Severity::Critical) {
-                                let again = v.validate(&f).await;
+                                // Re-run the SAME pipeline that produced the
+                                // verdict — class validator first, generic
+                                // rescue second. Re-running only the class
+                                // validator killed rescue-verified findings.
+                                let mut again = v.validate(&f).await;
+                                if matches!(again, Verdict::Rejected { .. })
+                                    && f.class != aegis_validate::FindingClass::Other
+                                {
+                                    if let Some(gen) = validators.get(&aegis_validate::FindingClass::Other) {
+                                        if let Verdict::Verified { reproduction } = gen.validate(&f).await {
+                                            again = Verdict::Verified { reproduction };
+                                        }
+                                    }
+                                }
                                 if !matches!(again, Verdict::Verified { .. }) {
                                     info!(title=%f.title,"second verifier disagreed — rejected");
                                     *rej.lock().unwrap() += 1;
